@@ -52,7 +52,7 @@ pi --extension D:\new-start\pi-super-vim\pi-super-vim.ts
 `pi.extensions` 指向 `./pi-super-vim.ts`，`files` 带上 `vim/`）：
 
 ```bash
-pi install git:github.com/gjm/pi-super-vim            # 现在就能用（GitHub 公开仓库直接装，不用 npm）
+pi install git:github.com/LittleGuo/pi-super-vim            # 现在就能用（GitHub 公开仓库直接装，不用 npm）
 pi install npm:pi-super-vim                                          # 发布到 npm 之后
 ```
 
