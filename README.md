@@ -52,12 +52,11 @@ pi --extension D:\new-start\pi-super-vim\pi-super-vim.ts
 `pi.extensions` 指向 `./pi-super-vim.ts`，`files` 带上 `vim/`）：
 
 ```bash
-pi install git:github.com/LittleGuo/pi-super-vim            # 现在就能用（GitHub 公开仓库直接装，不用 npm）
-pi install npm:pi-super-vim                                          # 发布到 npm 之后
+pi install npm:pi-super-vim                                  # 推荐
+pi install git:github.com/LittleGuo/pi-super-vim@v0.1.0      # 从 GitHub 装（锁版本，不经过 npm）
 ```
 
-`vim/pi-super-vim.vim` 由扩展从包所在目录直接读，不用手动复制。发布只需 `npm login` 后
-`npm publish`；`pi-package` keyword 会让它出现在 https://pi.dev/packages 里。
+`vim/pi-super-vim.vim` 由扩展从包所在目录直接读，不用手动复制。
 
 不想走 package 也可以手工丢文件（pi 会加载带 `index.ts` 的子目录）：
 
