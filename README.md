@@ -32,7 +32,8 @@
 
 ## 环境要求
 
-* Windows（其他平台也能跑，只要 `gvim`/`vim` 带 `+clientserver`，源码里没有 Windows 专用逻辑）
+* **仅 Windows + gvim**。这个扩展是给「Windows 终端里打中文/长 prompt 难受」写的，Linux/macOS 没实测，也不打算支持。
+  非 Windows 上请在 gvim 里自己写，别提 issue。
 * 官方 Vim for Windows（`C:\Program Files\Vim\vim92\` 里面同时有 `gvim.exe` 和 `vim.exe`）。
   `gvim.exe` 当 server，`vim.exe` 当无窗口的 client（能拿到 `--remote-expr` 的输出和退出码）。
 * Vim 8.1 以上（用到 `bufadd()` / `win_findbuf()` / `tabpagebuflist()`）——9.x 实测没问题
@@ -47,7 +48,18 @@
 pi --extension D:\new-start\pi-super-vim\pi-super-vim.ts
 ```
 
-想全局使用，把 `pi-super-vim.ts` 和 `vim/` 一起放进一个子目录即可（pi 会加载带 `index.ts` 的子目录）：
+想全局使用，装成一个 pi package（仓库根目录的 `package.json` 已经按 pi 的 package 规范写好：
+`pi.extensions` 指向 `./pi-super-vim.ts`，`files` 带上 `vim/`）：
+
+```bash
+pi install git:github.com/gjm/pi-super-vim            # 现在就能用（GitHub 公开仓库直接装，不用 npm）
+pi install npm:pi-super-vim                                          # 发布到 npm 之后
+```
+
+`vim/pi-super-vim.vim` 由扩展从包所在目录直接读，不用手动复制。发布只需 `npm login` 后
+`npm publish`；`pi-package` keyword 会让它出现在 https://pi.dev/packages 里。
+
+不想走 package 也可以手工丢文件（pi 会加载带 `index.ts` 的子目录）：
 
 ```
 %USERPROFILE%\.pi\agent\extensions\pi-super-vim\index.ts        <- 由 pi-super-vim.ts 改名/复制
