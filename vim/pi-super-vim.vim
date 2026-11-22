@@ -159,6 +159,9 @@ function! s:Configure(file, sid) abort
   setlocal statusline=%#WarningMsg#\ pi\ %#Normal#%{get(b:,'pi_label',\ get(b:,'pi_session',''))}\ \ \ :Pi\ send\ \ \ :PiClear\ \ \ :PiClose
   " Window title: the tab label, not the control file name.
   let &titlestring = '%{get(b:, ''pi_label'', expand(''%:t''))} - %{v:servername}'
+  " gvim on Windows draws GUI tab pages (guioptions has 'e'): those use
+  " 'guitablabel' and ignore 'tabline'.  Set both so either kind of vim agrees.
+  let &guitablabel = ' %{get(b:, ''pi_label'', expand(''%:t''))}%{get(b:, ''&modified'', 0) ? '' +'' : ''''} '
   let b:pi_session = a:sid
   let b:pi_ctrl_dir = fnamemodify(a:file, ':h')
   let b:pi_ready = 1
@@ -247,8 +250,11 @@ function! PiSuperVimRelabel(sid, name) abort
   let l:label = s:TabLabel(a:sid, a:name)
   call settabvar(l:tab, 'pi_tablabel', l:label)
   call setbufvar(l:buf, 'pi_label', l:label)
-  if exists('*redrawtabline')
-    call redrawtabline()
+  " 'redrawtabline' is a command in modern Vim; older ones need a full redraw.
+  if exists(':redrawtabline')
+    redrawtabline
+  else
+    redraw!
   endif
   return 1
 endfunction
@@ -312,6 +318,7 @@ function! s:Submit(mode) abort
 endfunction
 
 " Tab line --------------------------------------------------------------
+" Only terminal vim uses this: gvim has GUI tab pages (see 'guitablabel').
 function! PiSuperVimTabline() abort
   let l:out = ''
   for l:i in range(1, tabpagenr('$'))
