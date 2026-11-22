@@ -68,6 +68,11 @@ function! s:ShortId(sid) abort
   return strpart(a:sid, 0, 8)
 endfunction
 
+" Tab label: the session name when it has one, the short id otherwise.
+function! s:TabLabel(sid, name) abort
+  return 'pi:' . (a:name ==# '' ? s:ShortId(a:sid) : a:name)
+endfunction
+
 " Buffer content without the trailing empty lines, as one string.
 function! s:Text() abort
   let l:lines = getline(1, '$')
@@ -151,7 +156,9 @@ function! s:Configure(file, sid) abort
   setlocal buflisted
   setlocal nolist wrap linebreak
   setlocal textwidth=0
-  setlocal statusline=%#WarningMsg#\ pi\ %#Normal#%{get(b:,'pi_session','')}\ \ \ :Pi\ send\ \ \ :PiClear\ \ \ :PiClose
+  setlocal statusline=%#WarningMsg#\ pi\ %#Normal#%{get(b:,'pi_label',\ get(b:,'pi_session',''))}\ \ \ :Pi\ send\ \ \ :PiClear\ \ \ :PiClose
+  " Window title: the tab label, not the control file name.
+  let &titlestring = '%{get(b:, ''pi_label'', expand(''%:t''))} - %{v:servername}'
   let b:pi_session = a:sid
   let b:pi_ctrl_dir = fnamemodify(a:file, ':h')
   let b:pi_ready = 1
@@ -168,8 +175,10 @@ function! s:Configure(file, sid) abort
 endfunction
 
 " Open (or focus) the prompt tab of one pi session.  Returns the tab number.
+" Optional args: 1 = clear the buffer, 2 = session name for the tab label.
 function! PiSuperVimOpen(file, sid, ...) abort
-  let l:clear = a:0 ? a:1 : 1
+  let l:clear = a:0 >= 1 ? a:1 : 1
+  let l:name = a:0 >= 2 ? a:2 : ''
   let l:path = fnamemodify(a:file, ':p')
   let l:buf = s:FindBuf(l:path)
   if l:buf == -1
@@ -201,8 +210,10 @@ function! PiSuperVimOpen(file, sid, ...) abort
   endtry
 
   let l:sid = a:sid ==# '' ? get(b:, 'pi_session', '') : a:sid
+  let l:label = s:TabLabel(l:sid, l:name)
+  let b:pi_label = l:label
   call s:Configure(l:path, l:sid)
-  let t:pi_tablabel = 'pi:' . s:ShortId(l:sid)
+  let t:pi_tablabel = l:label
 
   if l:clear
     " Clear the tab unless you already started typing a new prompt.
@@ -220,6 +231,26 @@ function! PiSuperVimOpen(file, sid, ...) abort
     silent! call feedkeys('i', 'n')
   endif
   return tabpagenr()
+endfunction
+
+" Relabel the tab of one session without touching focus or buffer contents.
+function! PiSuperVimRelabel(sid, name) abort
+  let l:buf = s:FindBufBySession(a:sid)
+  if l:buf == -1
+    return 0
+  endif
+  let l:wins = win_findbuf(l:buf)
+  if empty(l:wins)
+    return 0
+  endif
+  let l:tab = win_id2tabwin(l:wins[0])[0]
+  let l:label = s:TabLabel(a:sid, a:name)
+  call settabvar(l:tab, 'pi_tablabel', l:label)
+  call setbufvar(l:buf, 'pi_label', l:label)
+  if exists('*redrawtabline')
+    call redrawtabline()
+  endif
+  return 1
 endfunction
 
 " Close the prompt tab of one session (kept when it has unsent text).
