@@ -114,6 +114,11 @@ function sessionFilePath(sid: string): string {
 	return path.join(config.ctrlDir, `${sid}.md`);
 }
 
+/** Session name for the vim tab label; empty when the session has none. */
+function sessionLabel(ctx: ExtensionContext): string {
+	return ctx.sessionManager.getSessionName?.()?.trim() ?? "";
+}
+
 function resolvePluginPath(cwd: string): string | undefined {
 	const candidates = [
 		config.pluginOverride,
@@ -355,7 +360,7 @@ async function openTab(ctx: ExtensionContext, clear: boolean): Promise<void> {
 		await runVimScript(sid, [
 			`execute 'source' fnameescape(${vimStr(plugin)})`,
 			...(config.startInsert ? [] : ["let g:pi_super_vim_startinsert = 0"]),
-			`call PiSuperVimOpen(${vimStr(sessionFilePath(sid))}, ${vimStr(sid)}, ${clear ? 1 : 0})`,
+			`call PiSuperVimOpen(${vimStr(sessionFilePath(sid))}, ${vimStr(sid)}, ${clear ? 1 : 0}, ${vimStr(sessionLabel(ctx))})`,
 		]);
 	});
 }
@@ -493,6 +498,21 @@ export default function piSuperVim(pi: ExtensionAPI) {
 		fs.mkdirSync(config.ctrlDir, { recursive: true });
 		startWatching(id);
 		log(`session ${id}, ctrl dir ${config.ctrlDir}`);
+	});
+
+	pi.on("session_info_changed", async (event, ctx) => {
+		latestCtx = ctx;
+		const sid = ctx.sessionManager.getSessionId();
+		const plugin = resolvePluginPath(ctx.cwd);
+		if (!sid || !plugin || !(await serverAlive())) return;
+		const label = event.name?.trim() ?? "";
+		// Renaming must not steal focus, so this only relabels the tab.
+		await serialize(() =>
+			runVimScript(sid, [
+				`execute 'source' fnameescape(${vimStr(plugin)})`,
+				`call PiSuperVimRelabel(${vimStr(sid)}, ${vimStr(label)})`,
+			]),
+		).catch((error) => log(`relabel failed: ${String(error)}`));
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {

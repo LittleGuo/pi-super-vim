@@ -53,11 +53,12 @@ const fakePi = {
 
 // --- fake context ----------------------------------------------------------
 let idle = true;
+let sessionName;
 const ctx = {
 	mode: "tui",
 	hasUI: true,
 	cwd: root,
-	sessionManager: { getSessionId: () => sid },
+	sessionManager: { getSessionId: () => sid, getSessionName: () => sessionName },
 	isIdle: () => idle,
 	ui: {
 		notify(message, type) {
@@ -175,6 +176,27 @@ await settled({ type: "agent_settled", aborted: false }, otherCtx);
 await new Promise((resolve) => setTimeout(resolve, 1500));
 check("second session has its own tab", vimExpr("tabpagenr('$')") === "2", `tabs=${vimExpr("tabpagenr('$')")}`);
 check("both tabs are labelled", vimExpr("string([gettabvar(1, 'pi_tablabel', ''), gettabvar(2, 'pi_tablabel', '')])") === "['pi:test-012', 'pi:test-fed']", vimExpr("string([gettabvar(1, 'pi_tablabel', ''), gettabvar(2, 'pi_tablabel', '')])"));
+
+// --- a named session shows its name, and a rename relabels in place --------
+sessionName = "refactor-auth";
+await handlers.get("session_info_changed")({ type: "session_info_changed", name: sessionName }, ctx);
+await new Promise((resolve) => setTimeout(resolve, 800));
+check(
+	"rename relabels the tab without stealing focus",
+	vimExpr("gettabvar(1, 'pi_tablabel', '')") === "pi:refactor-auth" && vimExpr("tabpagenr()") === "2",
+	vimExpr("string([gettabvar(1, 'pi_tablabel', ''), tabpagenr()])"),
+);
+check(
+	"statusline shows the name too",
+	vimExpr("getbufvar(tabpagebuflist(1)[0], 'pi_label', '')") === "pi:refactor-auth" &&
+		vimExpr("&statusline").includes("pi_label"),
+	vimExpr("string([getbufvar(tabpagebuflist(1)[0], 'pi_label', ''), &statusline])"),
+);
+check(
+	"window title follows the label, not the control file",
+	vimExpr("&titlestring").includes("pi_label") && !vimExpr("&titlestring").includes("pi_session"),
+	vimExpr("&titlestring"),
+);
 
 // --- busy pi queues the prompt --------------------------------------------
 idle = false;
