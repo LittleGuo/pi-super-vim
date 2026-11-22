@@ -193,6 +193,11 @@ check(
 	vimExpr("string([getbufvar(tabpagebuflist(1)[0], 'pi_label', ''), &statusline])"),
 );
 check(
+	"gvim GUI tab label uses the name",
+	vimExpr("&guitablabel").includes("pi_label"),
+	vimExpr("&guitablabel"),
+);
+check(
 	"window title follows the label, not the control file",
 	vimExpr("&titlestring").includes("pi_label") && !vimExpr("&titlestring").includes("pi_session"),
 	vimExpr("&titlestring"),
