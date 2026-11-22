@@ -106,6 +106,7 @@ pi 里的命令：
 
 * **一个 gvim，多个 tab**：gvim 用固定的 server 名（默认 `PI_SUPER_VIM`）常驻；每个 pi session
   一个 tab（tab 变量 `t:pi_tablabel`、buffer 变量 `b:pi_session`），所以同时开几个 pi 也不会串。
+  tab 标签是 `pi:<session 名称>`，session 没名字时退回 `pi:<id 前 8 位>`；改名后标签就地更新，不抢焦点。
 * **buffer 是 scratch buffer**：`buftype=acwrite`、无 swap、无 undofile、markdown 语法/折行，
   名字是 `<控制目录>/<session id>.md`，但不会真的写这个文件。
 * **通信目录**：默认 `%TEMP%\pi-super-vim\`（`os.tmpdir()`），里面有
