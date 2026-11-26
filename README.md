@@ -1,8 +1,11 @@
 # pi-super-vim
 
-用 vim 的 tab 来写 pi 的 prompt。pi 还在原来的终端里跑，输出也在原来的地方；pi 答完一轮之后，
-它会在一个常驻的 gvim 里把「当前 session 的输入 tab」准备好，你在 vim 里写完 `:Pi`，这段文字就被
-当成你刚刚在 pi 里敲下的输入。
+用 vim 来写 pi 的 prompt。pi 还在原来的终端里跑，输出也在原来的地方；pi 答完一轮之后，
+它把「当前 session 的输入处」准备好（常驻 gvim 的一个 tab，或者 WT 里 split 一个 pane），
+你在 vim 里写完 `:Pi`，这段文字就被当成你刚刚在 pi 里敲下的输入。
+
+两种形态：gvim 窗口（默认，一个常驻 gvim + 每个 session 一个 tab）和 **WT 分屏**
+（每个 prompt 一个一次性 pane，发完即关，回复后再开新的）。
 
 ```
  ┌───────────────┐   ① 一轮结束(agent_settled)      ┌──────────────────────────┐
@@ -25,38 +28,50 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `pi-super-vim.ts` | pi 扩展：管理 gvim server、按 session 开关 tab、监听请求文件、投递给 pi |
+| `pi-super-vim.ts` | pi 扩展：管理 gvim server / WT pane、按 session 开关 tab、监听请求文件、投递给 pi |
 | `vim/pi-super-vim.vim` | vim 这一半：维护 prompt buffer、`:Pi` 等命令、tab 标题、草稿保护 |
 | `.pi/extensions/pi-super-vim.ts` | 让 pi 在本项目里自动加载上面的扩展（转发一行） |
-| `test/harness.mjs` | 不需要模型的自测脚本（假的 pi API + 真 gvim 往返） |
+| `test/harness.mjs` | gvim 模式自测（假的 pi API + 真 gvim 往返） |
+| `test/pane.mjs` | WT 分屏自测（假的 pi API + 真 pane + 真 vim） |
 
 ## 环境要求
 
-* **仅 Windows + gvim**。这个扩展是给「Windows 终端里打中文/长 prompt 难受」写的，Linux/macOS 没实测，也不打算支持。
+* **仅 Windows**。这个扩展是给「Windows 终端里打中文/长 prompt 难受」写的，Linux/macOS 没实测，也不打算支持。
   非 Windows 上请在 gvim 里自己写，别提 issue。
-* 官方 Vim for Windows（`C:\Program Files\Vim\vim92\` 里面同时有 `gvim.exe` 和 `vim.exe`）。
-  `gvim.exe` 当 server，`vim.exe` 当无窗口的 client（能拿到 `--remote-expr` 的输出和退出码）。
+* **Vim for Windows**：装 `C:\Program Files\Vim\vim92\`（里面同时有 `gvim.exe` 和 `vim.exe`）
+  * gvim 窗口模式：`gvim.exe` 当 server，`vim.exe` 当无窗口的 client（能拿到 `--remote-expr` 的输出和退出码）
+  * WT 分屏模式：只要 console 的 `vim.exe`，另外需要 Windows Terminal 自带的 `wt.exe`（不用额外装）
 * Vim 8.1 以上（用到 `bufadd()` / `win_findbuf()` / `tabpagebuflist()`）——9.x 实测没问题
 * pi 1.4+
 
 ## 安装
 
-本项目里已经放好了 `.pi/extensions/pi-super-vim.ts`，在这个目录下启动 pi 就会加载（项目本地
-扩展需要信任该项目）。或者显式加载：
-
-```powershell
-pi --extension D:\new-start\pi-super-vim\pi-super-vim.ts
-```
-
-想全局使用，装成一个 pi package（仓库根目录的 `package.json` 已经按 pi 的 package 规范写好：
-`pi.extensions` 指向 `./pi-super-vim.ts`，`files` 带上 `vim/`）：
+先装 Vim（`winget install vim.vim`，或官网安装包），再装扩展：
 
 ```bash
-pi install npm:pi-super-vim                                  # 推荐
-pi install git:github.com/LittleGuo/pi-super-vim@v0.1.0      # 从 GitHub 装（锁版本，不经过 npm）
+# 锁版本（推荐，行为不会突然变）
+pi install git:github.com/LittleGuo/pi-super-vim@v0.2.0
+
+# 跟最新
+pi install git:github.com/LittleGuo/pi-super-vim@main
 ```
 
+以后更新：`pi update git:github.com/LittleGuo/pi-super-vim`（拉到新 tag/main 才会变，不推就不动）。
+
+> **别用 npm**：`npm:pi-super-vim` 只到 0.1.0，仓库的自动发布（Trusted Publishing）从未配通。
+> 要 npm 版得自己配 npm 侧的 trusted publisher，对使用者没意义——git 装出来的内容一模一样。
+
 `vim/pi-super-vim.vim` 由扩展从包所在目录直接读，不用手动复制。
+
+本仓库里还有 `.pi/extensions/pi-super-vim.ts`（一行转发），所以在**这个目录**启动 pi 会自动加载
+（项目本地扩展需要信任该项目）。注意：如果你已经全局安装过这个包，在这里启动 pi 会加载到两份，
+扩展自己会去重（第二次加载直接跳过），不会出现两个 gvim。
+
+也可以显式加载单个文件：
+
+```powershell
+pi --extension D:\new-start\PI-EXTENSIONS\pi-super-vim\pi-super-vim.ts
+```
 
 不想走 package 也可以手工丢文件（pi 会加载带 `index.ts` 的子目录）：
 
@@ -65,7 +80,7 @@ pi install git:github.com/LittleGuo/pi-super-vim@v0.1.0      # 从 GitHub 装（
 %USERPROFILE%\.pi\agent\extensions\pi-super-vim\vim\pi-super-vim.vim
 ```
 
-如果你还想在自己手动启动的 vim 里也能用 `:Pi`（而不是只在 pi 打开的 tab 里）：
+如果你还想在自己手动启动的 vim 里也能用 `:Pi`（而不只是 pi 开的 tab/pane 里）：
 
 ```
 /pivim install      # 复制 vim/pi-super-vim.vim 到 ~/.vim/plugin/
@@ -73,9 +88,16 @@ pi install git:github.com/LittleGuo/pi-super-vim@v0.1.0      # 从 GitHub 装（
 
 ## 使用
 
+两种形态，`/pivim pane` 和 `/pivim gvim` 互切，默认是 gvim 窗口：
+
+* **gvim 窗口**：一个常驻 gvim，每个 session 一个 tab，一轮结束把 tab 切到前台并清空
+* **WT 分屏**：在 pi 所在的 Windows Terminal 里 split 一个 pane，见下面「分屏模式」
+
+下面以 gvim 窗口为例：
+
 1. 正常跟 pi 说话。
-2. pi 答完，gvim 自动启动（第一次会慢一点）或切到当前 session 的 tab，标题是 `pi:<session id 前 8 位>`，
-   光标已经在插入模式，tab 内容已清空。
+2. pi 答完，gvim 自动启动（第一次会慢一点）或切到当前 session 的 tab，标题是 `pi:<session 名称>`
+   （没名字时退回 `pi:<id 前 8 位>`），光标已经在插入模式，tab 内容已清空。
 3. 写你的下一段 prompt。
 4. `Esc` 然后：
 
@@ -97,9 +119,12 @@ pi 里的命令：
 
 | 命令 | 作用 |
 | --- | --- |
-| `/pivim` | 现在就把 vim tab 打开/切过来（不等一轮结束） |
-| `/pivim status` | 打印 gvim / client / 插件 / 控制目录 / session 状态，排查用 |
-| `/pivim close` | 关闭当前 session 的 tab |
+| `/pivim` | 现在就把 vim tab（或 pane）打开/切过来（不等一轮结束） |
+| `/pivim pane` / `/pivim gvim` | 切换形态，会被记住 |
+| `/pivim split h` / `split v` | 分屏方向：上下（默认）/ 左右 |
+| `/pivim lines N` / `cols N` | 分屏大小：文字行数（默认 15）/ 文字列数（默认 60） |
+| `/pivim status` | 打印 target / 分屏设置 / gvim / client / 插件 / 控制目录 / session，排查用 |
+| `/pivim close` | 关闭当前 session 的 tab（pane 模式自己 `:q` 或发完就关） |
 | `/pivim install` | 把 vim 插件复制到 `~/.vim/plugin/` |
 
 ## 细节
