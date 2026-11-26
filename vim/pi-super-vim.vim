@@ -139,12 +139,15 @@ function! s:SaveAllDrafts() abort
     endif
     if !getbufvar(l:info.bufnr, '&modified')
       call delete(l:dir . '/' . l:sid . '.draft')
+      " Pane mode liveness marker: gone once this vim is gone.
+      call delete(l:dir . '/' . l:sid . '.pane')
       continue
     endif
     try
       call writefile(getbufline(l:info.bufnr, 1, '$'), l:dir . '/' . l:sid . '.draft')
     catch
     endtry
+    call delete(l:dir . '/' . l:sid . '.pane')
   endfor
 endfunction
 
@@ -171,6 +174,9 @@ function! s:Configure(file, sid) abort
   command! -buffer -nargs=0 PiQueue call s:Submit('followUp')
   command! -buffer -nargs=0 PiClear call s:Clear()
   command! -buffer -nargs=0 PiClose call PiSuperVimClose(get(b:, 'pi_session', ''))
+  " Pane mode: pi has no vim server to talk to, so the vim half is its own
+  " process and writes its pid here; the extension reopens a pane when it is gone.
+  call writefile([string(getpid()), string(&lines), string(&columns)], s:CtrlPath('pane'))
   augroup pi_super_vim_buffer
     autocmd! * <buffer>
     autocmd BufWriteCmd <buffer> call s:Submit('auto')
@@ -315,6 +321,11 @@ function! s:Submit(mode) abort
   silent! setlocal nomodified
   call delete(s:CtrlPath('draft'))
   echomsg 'pi: sent ' . len(split(l:text, "\n", 1)) . ' line(s), waiting for pi'
+  " Pane mode: a dedicated vim per prompt, so it quits and the pane goes away
+  " with it.  pi opens a fresh pane when the run has settled.
+  if get(g:, 'pi_super_vim_quit_after_send', 0)
+    qall!
+  endif
 endfunction
 
 " Tab line --------------------------------------------------------------

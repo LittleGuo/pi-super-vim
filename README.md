@@ -121,6 +121,37 @@ pi 里的命令：
 * **退出**：pi 退出（或 `/new`、`/resume` 换 session）时会关掉对应 tab；最后一个 tab 关掉时 gvim 顺势退出。
   有未发送文字时保留 tab 并写草稿。`/pivim close` 同理。
 
+## 分屏模式（Windows Terminal pane）
+
+除了独立 gvim 窗口，也可以让 vim 直接在 pi 所在的 Windows Terminal 里分屏（默认仍是 gvim 窗口）：
+
+```
+/pivim pane        # 换成 WT 分屏
+/pivim gvim        # 换回独立 gvim 窗口
+/pivim split h     # 上下分屏（vim 在下，默认）
+/pivim split v     # 左右分屏（vim 在右）
+/pivim lines 15    # 上下分屏时 vim 占多少文字行
+/pivim cols 60     # 左右分屏时 vim 占多少文字列
+/pivim status       # 看当前 target / 方向 / 大小
+```
+
+这些设置写在 `<控制目录>/prefs` 里，重启 pi 也记得。
+
+**工作方式**（和 gvim 模式的一个关键区别）：
+
+* 一轮结束后开一个 pane，里面是**一次性的 vim**（不是 server，没法远程调用它）；
+* 你写完 `:Pi` / `:w`，那个 vim 直接 `qall!` 退出，pane 跟着消失（launcher 结尾 `exit /b 0`，
+  WT 看到退出码 0 就直接关 pane，不会停在“按回车关闭”）；
+* pi 回答完再开一个新的空 pane —— 所以不需要“清空缓冲区”的逻辑；
+* 没发就 `:q` 的话，`VimLeavePre` 照旧把草稿写进 `<sid>.draft`，下一个 pane 自动恢复。
+
+**已知限制**：WT 的 CLI 只有按序号的 `focus-pane`、没有稳定 pane id，也没有 `close-pane`，
+所以扩展不会（也无法）把焦点切到 pane；用 WT 自己的快捷键在 pane 之间跳。
+
+行数/列数的换算是 `行数 / pi 终端行数` 得出 `wt --size` 的比例，WT 会按像素取整，所以实际可能差 1~2 行。
+也可以用环境变量 `PI_SUPER_VIM_PANE_SPLIT=h|v`、`PI_SUPER_VIM_PANE_LINES`、`PI_SUPER_VIM_PANE_COLS`
+作为初始值（`/pivim` 里设的值优先，且会被记住）。
+
 ## 配置（环境变量）
 
 | 变量 | 默认 | 说明 |
@@ -133,6 +164,11 @@ pi 里的命令：
 | `PI_SUPER_VIM_AUTO` | `1` | `0` = 一轮结束后不自动弹 vim，只用 `/pivim` |
 | `PI_SUPER_VIM_STARTINSERT` | `1` | 打开 tab 时是否直接进插入模式 |
 | `PI_SUPER_VIM_CLOSE` | `1` | pi 退出时是否关闭 tab |
+| `PI_SUPER_VIM_TARGET` | `gvim` | `pane` = 用 WT 分屏而不是 gvim 窗口（也可用 `/pivim pane`） |
+| `PI_SUPER_VIM_PANE_SPLIT` | `h` | 分屏方向：`h` 上下，`v` 左右 |
+| `PI_SUPER_VIM_PANE_LINES` | `15` | 上下分屏时的高度（文字行数） |
+| `PI_SUPER_VIM_PANE_COLS` | `60` | 左右分屏时的宽度（文字列数） |
+| `PI_SUPER_VIM_WT` | 自动查找 | `wt.exe` 路径 |
 | `PI_SUPER_VIM_DEBUG` | `0` | `1` = 往 `<控制目录>/debug.log` 写日志 |
 
 vim 侧变量（可放 vimrc，或者等 pi 打开 tab 后 `:let`，只影响这个 server）：
@@ -166,3 +202,9 @@ node test/harness.mjs
 它会：加载扩展 -> 造假 pi API / 假 ctx -> 开 tab -> 用真的 vim 插件写内容并 `:Pi` / `:w` ->
 检查 pi 收到的文本、清空规则、草稿保护、第二个 session 的 tab、忙时排队、退出时关 tab。
 跑完自己 `qa!` 关掉测试用的 gvim。
+
+分屏模式的自测（会真的在你当前 WT 窗口里开一个 pane，跑完自己关掉）：
+
+```powershell
+node test/pane.mjs
+```

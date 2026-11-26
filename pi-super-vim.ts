@@ -41,7 +41,19 @@ const config = {
 	closeOnExit: process.env.PI_SUPER_VIM_CLOSE !== "0",
 	/** Append diagnostics to <ctrl>/debug.log. */
 	debug: process.env.PI_SUPER_VIM_DEBUG === "1",
+	/** "pane" puts vim in a Windows Terminal split pane instead of a gvim window. */
+	target: process.env.PI_SUPER_VIM_TARGET?.trim().toLowerCase() === "pane" ? "pane" : "gvim",
+	/** Share of the pane the vim side gets (wt split-pane --size). */
+	paneSize: process.env.PI_SUPER_VIM_PANE_SIZE?.trim() || "",
+	/** "h" stacks vim under pi, "v" puts it beside pi. */
+	paneSplit: process.env.PI_SUPER_VIM_PANE_SPLIT?.trim().toLowerCase() === "v" ? "-V" : "-H",
+	/** Pane height in text lines when split is "h". */
+	paneLines: Number.parseInt(process.env.PI_SUPER_VIM_PANE_LINES ?? "", 10) || 15,
+	/** Pane width in text columns when split is "v". */
+	paneCols: Number.parseInt(process.env.PI_SUPER_VIM_PANE_COLS ?? "", 10) || 60,
 };
+
+type Target = "gvim" | "pane";
 
 type RequestMode = "auto" | "steer" | "followUp";
 
@@ -112,6 +124,55 @@ function vimStr(value: string): string {
 
 function sessionFilePath(sid: string): string {
 	return path.join(config.ctrlDir, `${sid}.md`);
+}
+
+/** Target picked with /pivim pane|gvim, remembered across restarts. */
+function rememberedTarget(): Target | undefined {
+	try {
+		const value = fs.readFileSync(path.join(config.ctrlDir, "target"), "utf8").trim();
+		return value === "pane" || value === "gvim" ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** key=value file with the /pivim settings, so they survive a restart. */
+function readPrefs(): Record<string, string> {
+	const prefs: Record<string, string> = {};
+	try {
+		for (const line of fs.readFileSync(path.join(config.ctrlDir, "prefs"), "utf8").split(/\r?\n/)) {
+			const at = line.indexOf("=");
+			if (at > 0) prefs[line.slice(0, at).trim()] = line.slice(at + 1).trim();
+		}
+	} catch {
+		// no prefs yet
+	}
+	return prefs;
+}
+
+function writePref(key: string, value: string): void {
+	fs.mkdirSync(config.ctrlDir, { recursive: true });
+	const prefs = readPrefs();
+	prefs[key] = value;
+	fs.writeFileSync(
+		path.join(config.ctrlDir, "prefs"),
+		`${Object.entries(prefs).map(([k, v]) => `${k}=${v}`).join("\n")}\n`,
+		"utf8",
+	);
+}
+
+/**
+ * wt wants a fraction of the pane, we want text lines/columns.  pi's own
+ * terminal size is the area being split, so plain division is the right answer.
+ */
+function paneSizeFraction(): string {
+	const rows = process.stdout.rows && process.stdout.rows > 0 ? process.stdout.rows : 40;
+	const cols = process.stdout.columns && process.stdout.columns > 0 ? process.stdout.columns : 120;
+	const fraction = config.paneSplit === "-V" ? config.paneCols / cols : config.paneLines / rows;
+	const size = Math.min(0.9, Math.max(0.1, fraction)).toFixed(3);
+	const want = config.paneSplit === "-V" ? `${config.paneCols} of ${cols} cols` : `${config.paneLines} of ${rows} lines`;
+	log(`pane size=${size} (${want})`);
+	return size;
 }
 
 /** Session name for the vim tab label; empty when the session has none. */
@@ -346,10 +407,98 @@ async function runVimScript(sid: string, lines: string[]): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// pane mode: vim in a Windows Terminal split pane
+// ---------------------------------------------------------------------------
+
+/** Pid the vim half wrote into <sid>.pane; it removes the file on exit. */
+function paneAlive(pidFile: string): boolean {
+	try {
+		const pid = Number.parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
+		if (!Number.isFinite(pid) || pid <= 0) return false;
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** wt.exe: App Execution Aliases cannot be stat()ed, so probe with access(). */
+function wtPath(): string | undefined {
+	const explicit = process.env.PI_SUPER_VIM_WT?.trim();
+	if (explicit) return explicit;
+	const alias = process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Microsoft", "WindowsApps", "wt.exe");
+	if (alias) {
+		try {
+			fs.accessSync(alias, fs.constants.X_OK);
+			return alias;
+		} catch {
+			// not the alias, fall through to PATH
+		}
+	}
+	return findOnPath(["wt", "wt.exe"]);
+}
+
+async function openPane(ctx: ExtensionContext, clear: boolean): Promise<void> {
+	const sid = ctx.sessionManager.getSessionId();
+	if (!sid) throw new Error("pi session is not ready yet");
+	const plugin = resolvePluginPath(ctx.cwd);
+	if (!plugin) throw new Error("vim/pi-super-vim.vim not found (set PI_SUPER_VIM_PLUGIN)");
+	const vim = clientPath();
+	if (!vim) throw new Error("vim.exe not found (set PI_SUPER_VIM_CLIENT)");
+	const wt = wtPath();
+	if (!wt) throw new Error("wt.exe not found: pane mode needs Windows Terminal (set PI_SUPER_VIM_WT)");
+	fs.mkdirSync(config.ctrlDir, { recursive: true });
+
+	if (paneAlive(path.join(config.ctrlDir, `${sid}.pane`))) {
+		// A pane closes itself when you send (`:Pi`), so a live one means you are
+		// already writing: leave it alone.  wt has no stable pane id to focus.
+		return;
+	}
+
+	const file = sessionFilePath(sid);
+	const scriptFile = path.join(config.ctrlDir, `${sid}.pane.vim`);
+	const launcher = path.join(config.ctrlDir, `${sid}.pane.cmd`);
+	const label = sessionLabel(ctx);
+	fs.writeFileSync(
+		scriptFile,
+		[
+			`execute 'source' fnameescape(${vimStr(plugin)})`,
+			"let g:pi_super_vim_quit_after_send = 1",
+			...(config.startInsert ? [] : ["let g:pi_super_vim_startinsert = 0"]),
+			`call PiSuperVimOpen(${vimStr(file)}, ${vimStr(sid)}, ${clear ? 1 : 0}, ${vimStr(label)})`,
+		].join("\n") + "\n",
+		"utf8",
+	);
+	// A .cmd launcher, because wt's own parser eats arguments that start with "-".
+	// Exit 0 matters: with a non-zero code WT keeps the dead pane open and asks
+	// for Enter or Ctrl+D.
+	fs.writeFileSync(launcher, `@echo off\r\n"${vim}" -S "${scriptFile}" "${file}"\r\nexit /b 0\r\n`, "utf8");
+
+	log(`wt split-pane ${launcher}`);
+	const child = spawn(
+		wt,
+		[
+			"-w", "0", "split-pane", config.paneSplit,
+			"--size", paneSizeFraction(),
+			"-d", ctx.cwd,
+			"--title", `pi:${label || sid.slice(0, 8)}`,
+			"--", "cmd", "/c", launcher,
+		],
+		{ detached: true, stdio: "ignore", windowsHide: true, env: process.env },
+	);
+	child.on("error", (error) => log(`wt spawn error: ${String(error)}`));
+	child.unref();
+}
+
+// ---------------------------------------------------------------------------
 // opening and closing the tab
 // ---------------------------------------------------------------------------
 
 async function openTab(ctx: ExtensionContext, clear: boolean): Promise<void> {
+	if (config.target === "pane") {
+		await openPane(ctx, clear);
+		return;
+	}
 	const sid = ctx.sessionManager.getSessionId();
 	if (!sid) throw new Error("pi session is not ready yet");
 	const plugin = resolvePluginPath(ctx.cwd);
@@ -366,6 +515,8 @@ async function openTab(ctx: ExtensionContext, clear: boolean): Promise<void> {
 }
 
 async function closeTab(ctx: ExtensionContext): Promise<void> {
+	// A pane is closed by the user (:q); wt exposes no close-pane command.
+	if (config.target === "pane") return;
 	const sid = ctx.sessionManager.getSessionId();
 	const plugin = resolvePluginPath(ctx.cwd);
 	if (!sid || !plugin) return;
@@ -500,6 +651,17 @@ export default function piSuperVim(pi: ExtensionAPI) {
 	}
 	globals[loadedKey] = true;
 
+	config.target = rememberedTarget() ?? config.target;
+	{
+		const prefs = readPrefs();
+		if (prefs.target === "pane" || prefs.target === "gvim") config.target = prefs.target;
+		if (prefs.split === "h") config.paneSplit = "-H";
+		if (prefs.split === "v") config.paneSplit = "-V";
+		const lines = Number.parseInt(prefs.lines ?? "", 10);
+		if (lines > 0) config.paneLines = lines;
+		const cols = Number.parseInt(prefs.cols ?? "", 10);
+		if (cols > 0) config.paneCols = cols;
+	}
 	piApi = pi;
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -551,11 +713,34 @@ export default function piSuperVim(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("pivim", {
-		description: "Open the vim prompt tab (pivim install | close | status)",
+		description: "Open the vim prompt tab (pivim pane | gvim | split h|v | lines N | cols N | install | close | status)",
 		handler: async (args, ctx) => {
 			latestCtx = ctx;
-			const action = (args ?? "").trim().toLowerCase();
+			const words = (args ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+			const action = words[0] ?? "";
+			const value = words[1] ?? "";
 			try {
+				if (action === "pane" || action === "gvim") {
+					config.target = action;
+					writePref("target", action);
+					notify(`pivim: target ${action}, remembered for the next pi start`, "info");
+					return;
+				}
+				if (action === "split" && (value === "h" || value === "v")) {
+					config.paneSplit = value === "v" ? "-V" : "-H";
+					writePref("split", value);
+					notify(`pivim: split ${value === "v" ? "left/right" : "top/bottom"} (next pane)`, "info");
+					return;
+				}
+				if (action === "lines" || action === "cols") {
+					const size = Number.parseInt(value, 10);
+					if (!(size > 0)) throw new Error(`give a number: /pivim ${action} 15`);
+					if (action === "lines") config.paneLines = size;
+					else config.paneCols = size;
+					writePref(action, String(size));
+					notify(`pivim: ${action} ${size} (next pane)`, "info");
+					return;
+				}
 				if (action === "install") {
 					const plugin = resolvePluginPath(ctx.cwd);
 					if (!plugin) throw new Error("vim/pi-super-vim.vim not found");
@@ -575,6 +760,8 @@ export default function piSuperVim(pi: ExtensionAPI) {
 					const plugin = resolvePluginPath(ctx.cwd);
 					notify(
 						[
+							`target: ${config.target}`,
+							`pane: split ${config.paneSplit === "-V" ? "left/right" : "top/bottom"}, ${config.paneSplit === "-V" ? `${config.paneCols} cols` : `${config.paneLines} lines`} (size ${paneSizeFraction()})`,
 							`vim server: ${config.serverName} (${alive ? "running" : "not running"})`,
 							`gvim: ${gvimPath() ?? "not found"}`,
 							`client: ${clientPath() ?? "not found"}`,
