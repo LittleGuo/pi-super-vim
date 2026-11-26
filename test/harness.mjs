@@ -127,6 +127,20 @@ function check(name, ok, extra = "") {
 	if (!ok) process.exitCode = 1;
 }
 
+// pi can load the extension twice in one process (package + .pi/extensions
+// forwarder). The second load must be a no-op, or two gvim servers fight.
+const dupHandlers = new Map();
+const dupExtension = (await import(new URL("../pi-super-vim.ts", import.meta.url).href + "?duplicate")).default;
+dupExtension({
+	on(event, handler) {
+		dupHandlers.set(event, handler);
+		return () => dupHandlers.delete(event);
+	},
+	registerCommand() {},
+	async sendUserMessage() {},
+});
+check("a second load in the same process registers nothing", dupHandlers.size === 0, `handlers=${[...dupHandlers.keys()].join(",") || "none"}`);
+
 // --- open the tab (what agent_settled does) --------------------------------
 await settled({ type: "agent_settled", aborted: false }, ctx);
 await new Promise((resolve) => setTimeout(resolve, 1500));

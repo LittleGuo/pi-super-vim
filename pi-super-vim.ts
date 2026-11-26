@@ -487,7 +487,19 @@ function stopWatching(): void {
 // extension
 // ---------------------------------------------------------------------------
 
+const loadedKey = Symbol.for("pi-super-vim.loaded");
+
 export default function piSuperVim(pi: ExtensionAPI) {
+	const globals = globalThis as { [loadedKey]?: boolean };
+	// Installed as a package *and* loaded through the repo's .pi/extensions
+	// forwarder, pi runs this twice: two gvim servers under one name, two tabs
+	// per session, and concurrent remote-expr requests (vim: E956).
+	if (globals[loadedKey]) {
+		log("already loaded in this process, skipping");
+		return;
+	}
+	globals[loadedKey] = true;
+
 	piApi = pi;
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -527,6 +539,8 @@ export default function piSuperVim(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		stopWatching();
+		// release the claim so the reloaded runtime can load this again
+		globals[loadedKey] = false;
 		// A reload brings the same session back: keep its tab.
 		if (!config.closeOnExit || event.reason === "reload") return;
 		try {
