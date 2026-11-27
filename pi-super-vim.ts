@@ -72,6 +72,11 @@ interface SessionState {
 	warned: boolean;
 }
 
+/** What pi.sendUserMessage() takes: the prompt plus the images :Img attached. */
+type OutgoingContent = Array<
+	{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+>;
+
 let session: SessionState | undefined;
 let latestCtx: ExtensionContext | undefined;
 let piApi: ExtensionAPI | undefined;
@@ -530,8 +535,66 @@ async function closeTab(ctx: ExtensionContext): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// receiving prompts from vim
+// receiving prompts from vim, with the images :Img attached
 // ---------------------------------------------------------------------------
+
+/** Written into the buffer by :Img; the file is <ctrl>/<sid>.img<N>.<ext>. */
+const IMAGE_PLACEHOLDER = /\[#img(\d+)\]/g;
+
+/** What pi-clip.ps1 can produce, keyed by the extension it writes. */
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+	png: "image/png",
+	jpg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+};
+
+/**
+ * Images the text refers to, in the order the text mentions them.  A placeholder
+ * whose file is gone (deleted placeholder, restored draft, aborted run) is
+ * reported as missing instead of being sent as an empty image.
+ */
+function imagesForText(text: string, sid: string) {
+	const images: OutgoingContent = [];
+	const files: string[] = [];
+	const missing: number[] = [];
+
+	let names: string[] = [];
+	try {
+		names = fs.readdirSync(config.ctrlDir);
+	} catch {
+		// No control dir yet: every placeholder below is reported as missing,
+		// so nothing is swallowed silently.
+	}
+
+	const ids = [...new Set([...text.matchAll(IMAGE_PLACEHOLDER)].map((match) => Number(match[1])))];
+	for (const id of ids) {
+		const prefix = `${sid}.img${id}.`;
+		const name = names.find((candidate) => {
+			if (!candidate.startsWith(prefix)) return false;
+			return IMAGE_MIME_BY_EXTENSION[candidate.slice(prefix.length).toLowerCase()] !== undefined;
+		});
+		if (!name) {
+			missing.push(id);
+			continue;
+		}
+		const file = path.join(config.ctrlDir, name);
+		const mimeType = IMAGE_MIME_BY_EXTENSION[path.extname(name).slice(1).toLowerCase()];
+		if (!mimeType) {
+			missing.push(id);
+			continue;
+		}
+		try {
+			const bytes = fs.readFileSync(file);
+			images.push({ type: "image", data: bytes.toString("base64"), mimeType });
+			files.push(file);
+		} catch {
+			missing.push(id);
+		}
+	}
+
+	return { images, files, missing };
+}
 
 async function deliver(request: VimRequest): Promise<void> {
 	const ctx = latestCtx;
@@ -548,19 +611,34 @@ async function deliver(request: VimRequest): Promise<void> {
 	const busy = !ctx.isIdle();
 	const deliverAs = mode === "auto" ? (busy ? "followUp" : undefined) : mode;
 
+	const { images, files, missing } = imagesForText(text, ctx.sessionManager.getSessionId() ?? "");
+	for (const id of missing) {
+		notify(`vim: [#img${id}] has no image file, sent as text only`, "warning");
+	}
+	const content: string | OutgoingContent = images.length > 0 ? [{ type: "text", text }, ...images] : text;
+
 	try {
-		await pi.sendUserMessage(text, deliverAs ? { deliverAs } : undefined);
+		await pi.sendUserMessage(content, deliverAs ? { deliverAs } : undefined);
 	} catch (error) {
 		// A run may have started between the idle check and the send.
 		try {
-			await pi.sendUserMessage(text, { deliverAs: "followUp" });
+			await pi.sendUserMessage(content, { deliverAs: "followUp" });
 		} catch (retryError) {
 			notify(`vim -> pi failed: ${String(retryError ?? error)}`, "error");
 			return;
 		}
 	}
+	// Only after a successful send: a failed delivery can be retried with :Pi.
+	for (const file of files) {
+		try {
+			fs.rmSync(file, { force: true });
+		} catch (error) {
+			log(`cannot delete ${file}: ${String(error)}`);
+		}
+	}
 	const preview = text.replace(/\s+/g, " ").slice(0, 70);
-	notify(`vim -> pi (${deliverAs ?? "now"}): ${preview}`, "info");
+	const attached = images.length > 0 ? ` (+${images.length} image)` : "";
+	notify(`vim -> pi (${deliverAs ?? "now"}): ${preview}${attached}`, "info");
 }
 
 async function drainRequests(): Promise<void> {
@@ -744,10 +822,13 @@ export default function piSuperVim(pi: ExtensionAPI) {
 				if (action === "install") {
 					const plugin = resolvePluginPath(ctx.cwd);
 					if (!plugin) throw new Error("vim/pi-super-vim.vim not found");
-					const target = path.join(os.homedir(), ".vim", "plugin", "pi-super-vim.vim");
-					fs.mkdirSync(path.dirname(target), { recursive: true });
-					fs.copyFileSync(plugin, target);
-					notify(`installed ${target}`, "info");
+					const target = path.join(os.homedir(), ".vim", "plugin");
+					fs.mkdirSync(target, { recursive: true });
+					fs.copyFileSync(plugin, path.join(target, path.basename(plugin)));
+					// :Img runs pi-clip.ps1 from next to the plugin file.
+					const helper = path.join(path.dirname(plugin), "pi-clip.ps1");
+					if (isFile(helper)) fs.copyFileSync(helper, path.join(target, "pi-clip.ps1"));
+					notify(`installed ${path.join(target, path.basename(plugin))}`, "info");
 					return;
 				}
 				if (action === "close") {

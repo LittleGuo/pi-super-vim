@@ -29,10 +29,12 @@
 | 文件 | 作用 |
 | --- | --- |
 | `pi-super-vim.ts` | pi 扩展：管理 gvim server / WT pane、按 session 开关 tab、监听请求文件、投递给 pi |
-| `vim/pi-super-vim.vim` | vim 这一半：维护 prompt buffer、`:Pi` 等命令、tab 标题、草稿保护 |
+| `vim/pi-super-vim.vim` | vim 这一半：维护 prompt buffer、`:Pi` 等命令、`:Img` 贴图、tab 标题、草稿保护 |
+| `vim/pi-clip.ps1` | 读 Windows 剪贴板（截图 / 复制的图片文件 / 图片路径），落盘成 `imgN.<ext>`，供 `:Img` 调用 |
 | `.pi/extensions/pi-super-vim.ts` | 让 pi 在本项目里自动加载上面的扩展（转发一行） |
 | `test/harness.mjs` | gvim 模式自测（假的 pi API + 真 gvim 往返） |
 | `test/pane.mjs` | WT 分屏自测（假的 pi API + 真 pane + 真 vim） |
+| `test/image.mjs` | `:Img` 自测（真 gvim + 假剪贴板 + 假 pi），不碰你真实剪贴板 |
 
 ## 环境要求
 
@@ -41,8 +43,10 @@
 * **Vim for Windows**：装 `C:\Program Files\Vim\vim92\`（里面同时有 `gvim.exe` 和 `vim.exe`）
   * gvim 窗口模式：`gvim.exe` 当 server，`vim.exe` 当无窗口的 client（能拿到 `--remote-expr` 的输出和退出码）
   * WT 分屏模式：只要 console 的 `vim.exe`，另外需要 Windows Terminal 自带的 `wt.exe`（不用额外装）
-* Vim 8.1 以上（用到 `bufadd()` / `win_findbuf()` / `tabpagebuflist()`）——9.x 实测没问题
+* Vim 8.1 以上（用到 `bufadd()` / `win_findbuf()` / `tabpagebuflist()` / `job_start()`）——9.x 实测没问题
 * pi 1.4+
+* 贴图（`:Img`）额外需要 Windows PowerShell：优先用 `powershell.exe`（系统自带，启动更快），退到 `pwsh`。
+  不用装任何东西，也不用管理员权限。
 
 ## 安装
 
@@ -83,7 +87,7 @@ pi --extension D:\new-start\PI-EXTENSIONS\pi-super-vim\pi-super-vim.ts
 如果你还想在自己手动启动的 vim 里也能用 `:Pi`（而不只是 pi 开的 tab/pane 里）：
 
 ```
-/pivim install      # 复制 vim/pi-super-vim.vim 到 ~/.vim/plugin/
+/pivim install      # 复制 vim/pi-super-vim.vim 和 pi-clip.ps1 到 ~/.vim/plugin/
 ```
 
 ## 使用
@@ -109,6 +113,7 @@ pi --extension D:\new-start\PI-EXTENSIONS\pi-super-vim\pi-super-vim.ts
 | `:w` | 和 `:Pi` 一样，等于「提交」（不会写磁盘） |
 | `:PiClear` | 清空 buffer（`u` 可以撤销回来） |
 | `:PiClose` | 关掉这个 tab（里面有没发的字时会保留） |
+| `:Img` | 把剪贴板里的图片贴成一个 `[#imgN]`，随 `:Pi` 一起发给 pi（见下面「贴图」） |
 
 清空规则（按你的要求，但不会吃掉你的草稿）：
 
@@ -125,7 +130,7 @@ pi 里的命令：
 | `/pivim lines N` / `cols N` | 分屏大小：文字行数（默认 15）/ 文字列数（默认 60） |
 | `/pivim status` | 打印 target / 分屏设置 / gvim / client / 插件 / 控制目录 / session，排查用 |
 | `/pivim close` | 关闭当前 session 的 tab（pane 模式自己 `:q` 或发完就关） |
-| `/pivim install` | 把 vim 插件复制到 `~/.vim/plugin/` |
+| `/pivim install` | 把 vim 插件和贴图脚本复制到 `~/.vim/plugin/` |
 
 ## 细节
 
@@ -139,12 +144,53 @@ pi 里的命令：
     谁先看到谁处理，文件先删再投递，避免重复发送；
   * `<sid>.cmd.vim`：扩展写给 vim 执行的小脚本；
   * `<sid>.draft`：你还没发出去、又关掉 vim 的草稿，下次打开自动恢复；
+  * `<sid>.imgN.<ext>` / `<sid>.imgN.res`：`:Img` 抓到的图片和它的结果行（`.res` 读完就删），
+    发送成功后图片文件也删；
   * `debug.log`：只有 `PI_SUPER_VIM_DEBUG=1` 时才写。
 * **tab 标题**：插件默认会把 `tabline` 换成自己的实现（显示 `pi:<id>`，有没发出去的字时带 `+`；普通 tab 显示文件名），
   但仅在你的 `tabline` 本来就是空的时才接管，不会覆盖你已有的配置；想彻底关掉设
   `let g:pi_super_vim_tabline = 0`。
 * **退出**：pi 退出（或 `/new`、`/resume` 换 session）时会关掉对应 tab；最后一个 tab 关掉时 gvim 顺势退出。
   有未发送文字时保留 tab 并写草稿。`/pivim close` 同理。
+
+## 贴图（`:Img`）
+
+在 pi 的 vim 里按 `Esc` 后 `:Img`，或者插入模式里 `<C-o>:Img<CR>`：把剪贴板里的图片贴成一个
+短占位符 `[#img1]`，光标位置就是它插入的位置。
+
+```
+看看这个报错 [#img1] 和正常时的 [#img2] 有什么不一样
+```
+
+`:Pi` 时扩展按文本里 `[#imgN]` 出现的顺序读出图片文件，作为 image content 和文本一起交给模型
+（`pi.sendUserMessage([{type:"text"},{type:"image"}])`）。文本里的 `[#imgN]` 保留，模型能对上号。
+
+**剪贴板里能是什么**（按优先级试，都在 `vim/pi-clip.ps1` 里）：
+
+| 剪贴板内容 | 典型操作 | 结果 |
+| --- | --- | --- |
+| 位图 | Win+Shift+S 截图、浏览器「复制图片」 | 转成 PNG 落盘 |
+| 文件（资源管理器复制） | 选中 `a.png` 按 Ctrl+C | 拷原文件字节 |
+| 文本路径 | 从别处复制了一个 `C:\...\a.png` | 认带引号 / `file://` / `~` / 相对路径，校验后读 |
+| 什么都没有 | — | 命令行提示 `pi: 剪贴板里没有图片…`，不插入占位符 |
+
+**几条行为约定**：
+
+* **vim 里永远不出现 base64**。图片字节由 `:Img` 写进 `<控制目录>/<sid>.imgN.<ext>`，
+  buffer 里只有 8~10 个字符的占位符；大截图不会拖慢撤销、不会撑爆寄存器。
+* **格式看魔数，不看扩展名**：只接受 PNG / JPEG / GIF / WebP，其余在 `:Img` 当场就报错。
+* **单张上限 4MB**（`g:pi_super_vim_img_max`）。超了当场拒绝，不会等到提交才失败。
+  故意不做压缩/缩放：真被 provider 拒了再加，`System.Drawing` 重采样要几百毫秒，不值。
+* **发送成功后文件才删**。删占位符 = 那张图不发；文件丢了（比如草稿恢复后文件已清）会在 pi 里
+  提示 `[#imgN] has no image file` 并只发文本，不会发一张空图。
+* **编号 = buffer 里现有最大号 + 1**。所以删掉 `[#img5]` 再贴会复用 `[#img5]`，不会撞号。
+* **删除是整块的**：`<BS>` / `<C-H>` / `<C-?>`（终端不同发的键不一样，三个都映射了）一次删掉整个
+  `[#imgN]`，`<Del>` 从前面删也是整块。旁边的文字不受影响。
+* **只在 pi 的 prompt buffer 里生效**：`:Img` 和上面几个映射都是 `-buffer` / `<buffer>` 的。
+  `:pivim install` 把插件装到 `~/.vim/plugin/` 之后，你在别的 vim 里（哪怕开着 markdown 文件）
+  也不会有 `:Img`，退格也不会变。整个功能想关掉：`let g:pi_super_vim_img = 0`。
+* **已知取舍**：手工删掉占位符、那张图的文件就留在 `%TEMP%` 里了（几百 KB，系统会清）。
+  真觉得占地方再加清理。
 
 ## 分屏模式（Windows Terminal pane）
 
@@ -203,6 +249,10 @@ vim 侧变量（可放 vimrc，或者等 pi 打开 tab 后 `:let`，只影响这
 | `g:pi_super_vim_startinsert` | `1` | 同 `PI_SUPER_VIM_STARTINSERT` |
 | `g:pi_super_vim_draft` | `1` | 关掉 vim 时是否保存未发送草稿 |
 | `g:pi_super_vim_tabline` | `1` | 是否接管（空的）`tabline` 显示 tab 名 |
+| `g:pi_super_vim_img` | `1` | 是否启用 `:Img` 和它的两个整块删除映射 |
+| `g:pi_super_vim_img_max` | `4194304` | `:Img` 单张图片字节上限 |
+| `g:pi_super_vim_clip_exe` | 自动（`powershell.exe` → `pwsh`） | 读剪贴板用的 PowerShell |
+| `g:pi_super_vim_clip_script` | 插件旁边的 `pi-clip.ps1` | 读剪贴板的脚本路径 |
 
 ## 排查
 
@@ -233,3 +283,13 @@ node test/harness.mjs
 ```powershell
 node test/pane.mjs
 ```
+
+贴图的自测（真 gvim、真映射、真往返，但剪贴板用 `test/fake-clip.ps1` 顶替，不碰你的剪贴板）：
+
+```powershell
+node test/image.mjs
+```
+
+它会检查：`:Img` 插入占位符、文件落盘、编号复用/递增、`<BS>` 和 `<Del>` 整块删除、
+剪贴板失败时不插入并报错、别的 buffer 里没有 `:Img`；以及 pi 侧：文本 + 图片按顺序发送、
+发完删文件、文件丢了只发文本并 warn。
