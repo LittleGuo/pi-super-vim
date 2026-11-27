@@ -26,6 +26,16 @@ endif
 if !exists('g:pi_super_vim_draft')
   let g:pi_super_vim_draft = 1
 endif
+if !exists('g:pi_super_vim_img')
+  let g:pi_super_vim_img = 1
+endif
+if !exists('g:pi_super_vim_img_max')
+  let g:pi_super_vim_img_max = 4194304
+endif
+
+" Absolute directory of this file, so pi-clip.ps1 is found next to it even
+" when :pivim install copied the pair to ~/.vim/plugin.
+let s:here = expand('<sfile>:p:h')
 
 " Helpers ---------------------------------------------------------------
 function! s:SamePath(a, b) abort
@@ -80,6 +90,134 @@ function! s:Text() abort
     call remove(l:lines, -1)
   endwhile
   return join(l:lines, "\n")
+endfunction
+
+" Clipboard images ------------------------------------------------------
+" :Img, only in pi prompt buffers, see s:Configure().
+
+function! s:ClipExe() abort
+  if get(g:, 'pi_super_vim_clip_exe', '') !=# ''
+    return g:pi_super_vim_clip_exe
+  endif
+  " Windows PowerShell starts about twice as fast as pwsh; both need -Sta,
+  " otherwise [Clipboard]::GetImage() throws.
+  return executable('powershell.exe') ? 'powershell.exe' : 'pwsh'
+endfunction
+
+function! s:ClipScript() abort
+  return get(g:, 'pi_super_vim_clip_script', '') !=# ''
+        \ ? g:pi_super_vim_clip_script
+        \ : s:here . '/pi-clip.ps1'
+endfunction
+
+" One past the highest placeholder in the buffer: an undo must not leave two
+" placeholders pointing at the same file.
+function! s:NextImageId() abort
+  let l:max = 0
+  for l:word in split(join(getline(1, '$'), "\n"), '\s\+')
+    let l:m = matchlist(l:word, '^\[#img\(\d\+\)\]$')
+    if !empty(l:m) && str2nr(l:m[1]) > l:max
+      let l:max = str2nr(l:m[1])
+    endif
+  endfor
+  return l:max + 1
+endfunction
+
+function! s:SizeLabel(bytes) abort
+  if a:bytes >= 1048576
+    return printf('%.1f MB', a:bytes / 1048576.0)
+  endif
+  if a:bytes >= 1024
+    return printf('%d KB', (a:bytes + 512) / 1024)
+  endif
+  return a:bytes . ' bytes'
+endfunction
+
+" Put the clipboard image into the buffer as [#imgN].  The bytes are written
+" to <ctrl>/<sid>.imgN.<ext> by pi-clip.ps1; this buffer only ever holds the
+" short placeholder, never base64.
+"
+" job_start() and not system(): system() opens a console window for a moment
+" on MS-Windows, job_start() does not.  The wait keeps :Img synchronous, so the
+" placeholder lands at the cursor without async callback bookkeeping.
+function! s:Img() abort
+  if !get(b:, 'pi_ready', 0)
+    echohl ErrorMsg | echomsg 'pi: this buffer is not a pi prompt' | echohl None
+    return
+  endif
+  let l:id = s:NextImageId()
+  let l:base = s:CtrlPath('img' . l:id)
+  let l:res = l:base . '.res'
+  call delete(l:res)
+  let l:cmd = [s:ClipExe(), '-NoProfile', '-NonInteractive', '-Sta',
+        \ '-ExecutionPolicy', 'Bypass', '-File', s:ClipScript(),
+        \ '-Out', l:base, '-MaxBytes', string(g:pi_super_vim_img_max)]
+  try
+    let l:job = job_start(l:cmd, {'in_io': 'null', 'err_io': 'null'})
+  catch
+    echohl ErrorMsg | echomsg 'pi: cannot start the clipboard helper: ' . v:exception | echohl None
+    return
+  endtry
+  let l:spins = 0
+  while job_status(l:job) ==# 'run' && l:spins < 500
+    sleep 10m
+    let l:spins += 1
+  endwhile
+  if job_status(l:job) ==# 'run'
+    call job_stop(l:job)
+    echohl WarningMsg | echomsg 'pi: the clipboard helper did not answer' | echohl None
+    return
+  endif
+  if job_status(l:job) ==# 'fail'
+    echohl ErrorMsg | echomsg 'pi: cannot run ' . l:cmd[0] . ' (set g:pi_super_vim_clip_exe)' | echohl None
+    return
+  endif
+  if !filereadable(l:res)
+    echohl WarningMsg | echomsg 'pi: the clipboard helper wrote no result' | echohl None
+    return
+  endif
+  let l:lines = readfile(l:res)
+  call delete(l:res)
+  let l:answer = empty(l:lines) ? '' : l:lines[0]
+  if l:answer =~# '^ERROR: '
+    echohl WarningMsg | echomsg 'pi: ' . substitute(l:answer, '^ERROR: ', '', '') | echohl None
+    return
+  endif
+  if !filereadable(l:answer)
+    echohl WarningMsg | echomsg 'pi: the image file is gone: ' . l:answer | echohl None
+    return
+  endif
+  silent! call feedkeys('[#img' . l:id . ']', 'n')
+  echomsg printf('pi: attached [#img%d] (%s)', l:id, s:SizeLabel(getfsize(l:answer)))
+  " shortcut: deleting the placeholder by hand leaves the file behind in the
+  " control dir.  It is a few hundred KB in %TEMP% and Windows cleans that up;
+  " add a sweep at :Img time when it starts to matter.
+endfunction
+
+" Backspace removes a whole [#imgN] and leaves text next to it alone.  The
+" count comes from the placeholder itself, not from a word motion, so the
+" result does not depend on what surrounds it.
+function! s:Backspace() abort
+  " In insert mode the cursor is on the character after the insertion point,
+  " one past the last character at the end of the line, so col('.') - 1 is the
+  " length of the text before it in both cases.
+  let l:before = strpart(getline('.'), 0, col('.') - 1)
+  let l:m = matchlist(l:before, '\[#img\d\+\]$')
+  if empty(l:m)
+    return "\<BS>"
+  endif
+  return repeat("\<BS>", len(l:m[0]))
+endfunction
+
+" The same forwards, for <Del> in insert mode: deleting inside a placeholder
+" must not leave a broken [#img fragment behind.
+function! s:DeleteChar() abort
+  let l:after = strpart(getline('.'), col('.') - 1)
+  let l:m = matchlist(l:after, '^\[#img\d\+\]')
+  if empty(l:m)
+    return "\<Del>"
+  endif
+  return repeat("\<Del>", len(l:m[0]))
 endfunction
 
 function! s:Clear() abort
@@ -159,7 +297,7 @@ function! s:Configure(file, sid) abort
   setlocal buflisted
   setlocal nolist wrap linebreak
   setlocal textwidth=0
-  setlocal statusline=%#WarningMsg#\ pi\ %#Normal#%{get(b:,'pi_label',\ get(b:,'pi_session',''))}\ \ \ :Pi\ send\ \ \ :PiClear\ \ \ :PiClose
+  setlocal statusline=%#WarningMsg#\ pi\ %#Normal#%{get(b:,'pi_label',\ get(b:,'pi_session',''))}\ \ \ :Img\ \ \ :Pi\ send\ \ \ :PiClear\ \ \ :PiClose
   " Window title: the tab label, not the control file name.
   let &titlestring = '%{get(b:, ''pi_label'', expand(''%:t''))} - %{v:servername}'
   " gvim on Windows draws GUI tab pages (guioptions has 'e'): those use
@@ -174,6 +312,19 @@ function! s:Configure(file, sid) abort
   command! -buffer -nargs=0 PiQueue call s:Submit('followUp')
   command! -buffer -nargs=0 PiClear call s:Clear()
   command! -buffer -nargs=0 PiClose call PiSuperVimClose(get(b:, 'pi_session', ''))
+  " Clipboard images: the command and the mapping exist only in this buffer,
+  " so a plain vim (:pivim install copies this file to ~/.vim/plugin) is not
+  " affected.
+  if g:pi_super_vim_img
+    command! -buffer -nargs=0 Img call s:Img()
+    " gvim's Backspace key is <BS>, a terminal sends <C-H> or <C-?> (0x7f): all
+    " three must be mapped or the placeholder is deleted character by character.
+    " <Del> is a different key and deletes forwards.
+    inoremap <buffer> <expr> <BS> <SID>Backspace()
+    inoremap <buffer> <expr> <C-H> <SID>Backspace()
+    inoremap <buffer> <expr> <C-?> <SID>Backspace()
+    inoremap <buffer> <expr> <Del> <SID>DeleteChar()
+  endif
   " Pane mode: pi has no vim server to talk to, so the vim half is its own
   " process and writes its pid here; the extension reopens a pane when it is gone.
   call writefile([string(getpid()), string(&lines), string(&columns)], s:CtrlPath('pane'))

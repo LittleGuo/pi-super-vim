@@ -1,6 +1,6 @@
 {
   "name": "pi-super-vim",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Write pi prompts in a real vim: one gvim tab per session, :Pi sends it back to pi",
   "keywords": ["pi-package", "vim", "gvim"],
   "license": "MIT",
