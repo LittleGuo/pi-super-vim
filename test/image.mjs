@@ -234,6 +234,7 @@ if (!vimExe) {
 
 	if (serverUp) {
 		const line = () => expr("getline(1)");
+		const messages = () => expr("execute('messages')").split(/\r?\n/);
 		// the -S script may still be running when the server answers
 		const ready = await until(() => expr("exists(':Img')") === "2", 15_000);
 		check(":Img exists in the pi prompt buffer", ready, expr("exists(':Img')"));
@@ -293,15 +294,30 @@ if (!vimExe) {
 			JSON.stringify(line()),
 		);
 
+		// Esc then :Img - the path a pane's vim takes, and the one that used to
+		// insert nothing because the placeholder was fed as normal-mode keys
+		send("<Esc>");
+		await until(() => expr("mode()") === "n", 5_000);
+		expr("execute('call cursor(1, 9)')");
+		// :Img from the command line, i.e. after Esc - keys go through feedkeys(),
+		// not --remote-expr, because a remote expression returns before the
+		// sleep loop inside :Img has finished.
+		send(":Img<CR>");
+		check(
+			":Img from the command line inserts at the cursor and keeps normal mode",
+			(await until(() => /^look at t\[#img\d+\]his  tail$/.test(line()), 20_000)) && expr("mode()") === "n",
+			`${JSON.stringify(line())} mode=${expr("mode()")}`,
+		);
+
 		// an unusable clipboard leaves the buffer alone and says why
 		const before = line();
 		expr("execute('let $PI_SUPER_VIM_TEST_IMAGE = ''C:/no/such/image.png''')");
-		send("<C-o>:Img<CR>");
+		send(":Img<CR>");
 		check(
 			"a failing clipboard helper inserts nothing and reports it",
-			await until(() => expr("execute('messages')").includes("PI_SUPER_VIM_TEST_IMAGE is not a file"), 20_000) &&
+			(await until(() => messages().some((message) => message.includes("PI_SUPER_VIM_TEST_IMAGE is not a file")), 20_000)) &&
 				line() === before,
-			JSON.stringify(line()),
+			`${JSON.stringify(line())} messages=${JSON.stringify(messages().slice(-2).join(" | "))}`,
 		);
 
 		// buffer local: a plain buffer has no :Img and no backspace mapping
