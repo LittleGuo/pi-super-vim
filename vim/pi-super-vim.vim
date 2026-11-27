@@ -275,6 +275,17 @@ function! s:DeleteChar() abort
   return repeat("\<Del>", len(l:m[0]))
 endfunction
 
+" Keeps 'modified' honest while the buffer is edited by hand: the buffer is
+" acwrite, so deleting all text leaves it "modified" and :q / :PiClose would
+" refuse to close an empty buffer forever.  Only clears it when there is
+" nothing to lose - typing again sets 'modified' again on its own.
+function! s:SyncModified() abort
+  if &modified && s:Text() =~# '^\s*$'
+    silent! setlocal nomodified
+    silent! call delete(s:CtrlPath('draft'))
+  endif
+endfunction
+
 function! s:Clear() abort
   if line('$') == 1 && getline(1) ==# ''
     return
@@ -386,6 +397,11 @@ function! s:Configure(file, sid) abort
   augroup pi_super_vim_buffer
     autocmd! * <buffer>
     autocmd BufWriteCmd <buffer> call s:Submit('auto')
+    " TextChanged for interactive editing (also keeps the tab's '+' honest),
+    " QuitPre for :q - vim checks 'modified' right after it, and an emptied
+    " buffer must not make :q ask for '!' forever.
+    autocmd TextChanged,TextChangedI <buffer> call s:SyncModified()
+    autocmd QuitPre <buffer> call s:SyncModified()
   augroup END
 endfunction
 
@@ -483,12 +499,22 @@ function! PiSuperVimClose(sid) abort
     return 1
   endif
   call win_gotoid(l:wins[0])
-  if &modified
+  " Not 'modified': emptying the buffer by hand leaves it set (see
+  " s:SyncModified) and an empty buffer has nothing worth keeping.
+  if &modified && s:Text() !~# '^\s*$'
     call s:SaveDraft()
     echomsg 'pi: tab kept, it has text that was not sent'
     return 0
   endif
-  silent! tabclose
+  silent! setlocal nomodified
+  " :tabclose refuses the last tab page (E784) - in the pane's one-shot vim that
+  " is always the case, there closing the tab means quitting.  qall without !
+  " so a modified buffer somewhere else is not thrown away silently.
+  if tabpagenr('$') == 1 && winnr('$') == 1
+    silent! qall
+  else
+    silent! tabclose
+  endif
   return 1
 endfunction
 

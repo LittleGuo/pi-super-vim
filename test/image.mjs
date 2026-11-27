@@ -38,6 +38,18 @@ process.env.PI_SUPER_VIM_TEST_IMAGE = fixture;
 process.env.PI_SUPER_VIM_CLOSE = "1";
 process.env.PI_SUPER_VIM_DEBUG = "1";
 
+// a crashed earlier run can still hold this directory open (vim keeps the
+// session file) and make the cleanup below fail with EPERM
+spawnSync(
+	"powershell.exe",
+	[
+		"-NoProfile",
+		"-Command",
+		`Get-CimInstance Win32_Process -Filter \"Name='gvim.exe' or Name='vim.exe'\" | Where-Object { $_.CommandLine -match '${serverName}' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }`,
+	],
+	{ windowsHide: true },
+);
+
 fs.rmSync(ctrlDir, { recursive: true, force: true });
 fs.mkdirSync(ctrlDir, { recursive: true });
 
@@ -192,6 +204,10 @@ if (!vimExe) {
 	// through a mapping are queued with feedkeys('m') instead: that is the path
 	// a typed key takes.
 	const keyFile = path.join(ctrlDir, "keys.vim");
+	const alive = () => {
+		const result = vim(["--servername", serverName, "--remote-expr", "1"]);
+		return result.status === 0 && !String(result.stderr ?? "").includes("E247");
+	};
 	const send = (notation) => {
 		// <C-o> is literal text in a Vimscript string, \<C-o> is the key
 		const body = notation.replace(/</g, "\\<");
@@ -217,7 +233,9 @@ if (!vimExe) {
 		"utf8",
 	);
 
-	const child = spawn(vimExe, ["--servername", serverName, "-S", startScript], {
+	// like the pane launcher: vim gets the session file as an argument, so
+	// PiSuperVimOpen() reuses that buffer instead of opening a second tab
+	const child = spawn(vimExe, ["--servername", serverName, "-S", startScript, sessionFile], {
 		detached: true,
 		stdio: "ignore",
 	});
@@ -238,6 +256,7 @@ if (!vimExe) {
 		// the -S script may still be running when the server answers
 		const ready = await until(() => expr("exists(':Img')") === "2", 15_000);
 		check(":Img exists in the pi prompt buffer", ready, expr("exists(':Img')"));
+		const promptBuf = expr("bufnr('%')"); // needed again after enew
 		check("insert mode backspace is remapped", expr("maparg('<BS>', 'i')") !== "", expr("maparg('<BS>', 'i')"));
 
 		// A = append at end of line: every key below arrives through the same
@@ -338,15 +357,30 @@ if (!vimExe) {
 			`${JSON.stringify(line())} messages=${JSON.stringify(messages().slice(-2).join(" | "))}`,
 		);
 
-		// buffer local: a plain buffer has no :Img and no backspace mapping
-		expr("execute('setlocal nomodified | enew')");
+		// buffer local: a plain buffer has no :Img and no backspace mapping.
+		// :new and not :enew - abandoning the prompt buffer would drop its text
+		// (nohidden), and the checks below need it.
+		expr("execute('new')");
 		check(
 			"a plain buffer has no :Img and keeps the normal backspace",
 			await until(() => expr("exists(':Img')") === "0" && expr("maparg('<BS>', 'i')") === "", 8_000),
 			`exists=${expr("exists(':Img')")} bs=${expr("maparg('<BS>', 'i')")}`,
 		);
+		expr("execute('close')");
 
-		vim(["--servername", serverName, "--remote-expr", "execute('qa!')"]);
+		// emptying the prompt buffer and closing must quit this one-tab vim
+		// (what the pane launcher starts), not ask about unsent text
+		expr(`execute('buffer ${promptBuf}')`);
+		send("<Esc>");
+		expr("execute('silent %delete _')");
+		// the buffer is acwrite, so it stays 'modified' until vim asks whether it
+		// may quit: :q must not keep demanding '!' for text that is gone
+		send(":q<CR>");
+		check(
+			":q on an emptied prompt quits instead of asking for !",
+			await until(() => !alive(), 15_000),
+			`alive=${alive()} modified=${JSON.stringify(expr("&modified"))}`,
+		);
 	}
 }
 
