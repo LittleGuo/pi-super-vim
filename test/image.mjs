@@ -309,6 +309,24 @@ if (!vimExe) {
 			`${JSON.stringify(line())} mode=${expr("mode()")}`,
 		);
 
+		// a placeholder glued to text still counts: the number must not restart at
+		// 1 and overwrite the first image's file
+		send(":Img<CR>");
+		check(
+			"a placeholder touching text still advances the number",
+			await until(() => /^look at t\[#img1\]\[#img2\]his  tail$/.test(line()), 20_000),
+			JSON.stringify(line()),
+		);
+
+		// the cursor parked inside an existing placeholder must not split it
+		expr("execute('call cursor(1, 12)')");
+		send(":Img<CR>");
+		check(
+			"a new placeholder never lands inside an existing one",
+			await until(() => /^look at t\[#img1\]\[#img2\]h\[#img3\]is  tail$/.test(line()), 20_000),
+			JSON.stringify(line()),
+		);
+
 		// an unusable clipboard leaves the buffer alone and says why
 		const before = line();
 		expr("execute('let $PI_SUPER_VIM_TEST_IMAGE = ''C:/no/such/image.png''')");

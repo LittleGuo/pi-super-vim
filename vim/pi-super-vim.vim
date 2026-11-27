@@ -95,6 +95,10 @@ endfunction
 " Clipboard images ------------------------------------------------------
 " :Img, only in pi prompt buffers, see s:Configure().
 
+" The placeholder the extension picks out of the submitted text
+" (pi-super-vim.ts, IMAGE_PLACEHOLDER) has to stay identical.
+let s:img_pat = '\[#img\d\+\]'
+
 function! s:ClipExe() abort
   if get(g:, 'pi_super_vim_clip_exe', '') !=# ''
     return g:pi_super_vim_clip_exe
@@ -110,15 +114,39 @@ function! s:ClipScript() abort
         \ : s:here . '/pi-clip.ps1'
 endfunction
 
-" One past the highest placeholder in the buffer: an undo must not leave two
-" placeholders pointing at the same file.
+" [start, end) byte range of the placeholder covering byte {idx} of {line}, or
+" an empty list.  matchend() takes the same optional start index as match().
+function! s:ImageAt(line, idx) abort
+  let l:from = 0
+  while 1
+    let l:start = match(a:line, s:img_pat, l:from)
+    if l:start < 0
+      return []
+    endif
+    let l:end = matchend(a:line, s:img_pat, l:start)
+    if a:idx >= l:start && a:idx < l:end
+      return [l:start, l:end]
+    endif
+    let l:from = l:end
+  endwhile
+endfunction
+
+" One past the highest placeholder in the buffer: a second :Img must not reuse a
+" number and overwrite that image's file.  Matches anywhere in the line, because
+" :Img inserts right where the cursor is - usually glued to the text
+" ("见图[#img1]，"), not as a whitespace-separated word.
 function! s:NextImageId() abort
   let l:max = 0
-  for l:word in split(join(getline(1, '$'), "\n"), '\s\+')
-    let l:m = matchlist(l:word, '^\[#img\(\d\+\)\]$')
-    if !empty(l:m) && str2nr(l:m[1]) > l:max
-      let l:max = str2nr(l:m[1])
-    endif
+  for l:line in getline(1, '$')
+    let l:from = 0
+    while 1
+      let l:start = match(l:line, s:img_pat, l:from)
+      if l:start < 0
+        break
+      endif
+      let l:max = max([l:max, str2nr(matchstr(l:line, '\d\+', l:start))])
+      let l:from = l:start + 1
+    endwhile
   endfor
   return l:max + 1
 endfunction
@@ -201,6 +229,18 @@ function! s:Img() abort
     " image goes right after it (like 'a'); 'i' would split the last word.
     " :normal! instead of byte arithmetic in setline(): a multi-byte character
     " must not be cut in half.
+    let l:hit = s:ImageAt(getline('.'), col('.') - 1)
+    " Cursor inside an existing placeholder: step behind it (and behind any
+    " placeholder sitting right next to it) so [#imgN] is never split.  On the
+    " closing bracket nothing has to move - 'a' inserts behind the whole match.
+    while !empty(l:hit) && col('.') - 1 < l:hit[1] - 1
+      if l:hit[1] >= len(getline('.'))
+        call cursor(line('.'), len(getline('.')))
+        break
+      endif
+      call cursor(line('.'), l:hit[1] + 1)
+      let l:hit = s:ImageAt(getline('.'), col('.') - 1)
+    endwhile
     silent! execute 'normal! a' . l:text
   endif
   echomsg printf('pi: attached [#img%d] (%s)', l:id, s:SizeLabel(getfsize(l:answer)))
@@ -217,7 +257,7 @@ function! s:Backspace() abort
   " one past the last character at the end of the line, so col('.') - 1 is the
   " length of the text before it in both cases.
   let l:before = strpart(getline('.'), 0, col('.') - 1)
-  let l:m = matchlist(l:before, '\[#img\d\+\]$')
+  let l:m = matchlist(l:before, s:img_pat . '$')
   if empty(l:m)
     return "\<BS>"
   endif
@@ -228,7 +268,7 @@ endfunction
 " must not leave a broken [#img fragment behind.
 function! s:DeleteChar() abort
   let l:after = strpart(getline('.'), col('.') - 1)
-  let l:m = matchlist(l:after, '^\[#img\d\+\]')
+  let l:m = matchlist(l:after, '^' . s:img_pat)
   if empty(l:m)
     return "\<Del>"
   endif
