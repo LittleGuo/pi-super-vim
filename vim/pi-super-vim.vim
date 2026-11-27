@@ -187,7 +187,22 @@ function! s:Img() abort
     echohl WarningMsg | echomsg 'pi: the image file is gone: ' . l:answer | echohl None
     return
   endif
-  silent! call feedkeys('[#img' . l:id . ']', 'n')
+  " Put the placeholder at the cursor.  :Img runs either from insert mode
+  " (<C-o>:Img) or from the command line after Esc, and mode() reports 'n' in
+  " both - only mode(1) shows the pending insert ('niI').  With an insert
+  " pending, feedkeys() lands on the insertion point by itself; feeding the same
+  " keys after Esc would run them as normal-mode commands (one backspace per
+  " character, '#' = search backwards) and insert nothing.
+  let l:text = '[#img' . l:id . ']'
+  if mode(1) =~# 'I'
+    silent! call feedkeys(l:text, 'n')
+  else
+    " After Esc the cursor sits on the character that was typed last, so the
+    " image goes right after it (like 'a'); 'i' would split the last word.
+    " :normal! instead of byte arithmetic in setline(): a multi-byte character
+    " must not be cut in half.
+    silent! execute 'normal! a' . l:text
+  endif
   echomsg printf('pi: attached [#img%d] (%s)', l:id, s:SizeLabel(getfsize(l:answer)))
   " shortcut: deleting the placeholder by hand leaves the file behind in the
   " control dir.  It is a few hundred KB in %TEMP% and Windows cleans that up;
