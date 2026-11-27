@@ -151,7 +151,8 @@ pi 里的命令：
   但仅在你的 `tabline` 本来就是空的时才接管，不会覆盖你已有的配置；想彻底关掉设
   `let g:pi_super_vim_tabline = 0`。
 * **退出**：pi 退出（或 `/new`、`/resume` 换 session）时会关掉对应 tab；最后一个 tab 关掉时 gvim 顺势退出。
-  有未发送文字时保留 tab 并写草稿。`/pivim close` 同理。
+  只在**确实有没发出去的文字**时才拦你：把内容删干净之后 `:q` / `:PiClose` 直接关，
+  不会再要你敲 `:q!`；有文字时保留 tab 并写草稿。`/pivim close` 同理。
 
 ## 贴图（`:Img`）
 
