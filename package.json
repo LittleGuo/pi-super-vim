@@ -1,8 +1,8 @@
 {
   "name": "pi-super-vim",
   "version": "0.3.0",
-  "description": "Write pi prompts in a real vim: one gvim tab per session, :Pi sends it back to pi",
-  "keywords": ["pi-package", "vim", "gvim"],
+  "description": "Write pi prompts in a real vim, paste clipboard screenshots with :Img, send with :Pi",
+  "keywords": ["pi-package", "pi-extension", "vim", "gvim", "screenshot", "image-paste", "clipboard"],
   "license": "MIT",
   "author": "LittleGuo",
   "repository": { "type": "git", "url": "git+https://github.com/LittleGuo/pi-super-vim.git" },
