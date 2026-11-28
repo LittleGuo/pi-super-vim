@@ -1,17 +1,34 @@
 {
   "name": "pi-super-vim",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Write pi prompts in a real vim, paste clipboard screenshots with :Img, send with :Pi",
-  "keywords": ["pi-package", "pi-extension", "vim", "gvim", "screenshot", "image-paste", "clipboard"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "vim",
+    "gvim",
+    "screenshot",
+    "image-paste",
+    "clipboard"
+  ],
   "license": "MIT",
   "author": "LittleGuo",
-  "repository": { "type": "git", "url": "git+https://github.com/LittleGuo/pi-super-vim.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LittleGuo/pi-super-vim.git"
+  },
   "homepage": "https://github.com/LittleGuo/pi-super-vim#readme",
   "bugs": "https://github.com/LittleGuo/pi-super-vim/issues",
   "type": "module",
-  "files": ["pi-super-vim.ts", "settings.ts", "vim/"],
+  "files": [
+    "pi-super-vim.ts",
+    "settings.ts",
+    "vim/"
+  ],
   "pi": {
-    "extensions": ["./pi-super-vim.ts"]
+    "extensions": [
+      "./pi-super-vim.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
