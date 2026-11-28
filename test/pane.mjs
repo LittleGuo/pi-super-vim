@@ -86,6 +86,12 @@ check("marker holds a live pid", pid > 0 && vimPids().includes(String(pid)), `pi
 // The vim half still quits on :Pi; the launcher loop is what keeps the pane.
 check("vim still quits on :Pi", fs.readFileSync(path.join(ctrlDir, `${sid}.pane.vim`), "utf8").includes("quit_after_send"));
 check("the launcher exits 0", /exit \/b 0/.test(fs.readFileSync(path.join(ctrlDir, `${sid}.pane.cmd`), "utf8")));
+// Each round goes back to the waiting line: without a cls the hint would pile
+// up one line per prompt (the screen keeps what the last vim left there).
+check(
+	"the waiting screen is cleared before the hint",
+	/^cls\s*$\r?\n\s*title pi pane/m.test(fs.readFileSync(path.join(ctrlDir, `${sid}.pane.cmd`), "utf8")),
+);
 // The 12 requested lines become a fraction of pi's height (40 is the fallback
 // when there is no tty, as in this test).
 const debugLog = fs.readFileSync(path.join(ctrlDir, "debug.log"), "utf8");

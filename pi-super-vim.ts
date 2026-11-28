@@ -23,7 +23,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { SettingsValues } from "./settings.ts";
+import type { SettingsLanguage, SettingsValues } from "./settings.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +58,8 @@ const config = {
 	paneLines: Number.parseInt(process.env.PI_SUPER_VIM_PANE_LINES ?? "", 10) || 20,
 	/** Pane width in text columns when vim is left/right of pi. */
 	paneCols: Number.parseInt(process.env.PI_SUPER_VIM_PANE_COLS ?? "", 10) || 60,
+	/** Language of the settings screen (prefs.lang wins). */
+	lang: "en" as SettingsLanguage,
 };
 
 type Target = "gvim" | "pane";
@@ -201,10 +203,12 @@ function applySettings(ctx: ExtensionContext, values: SettingsValues): void {
 	config.paneSplit = values.split;
 	config.paneLines = values.lines;
 	config.paneKeep = values.keep;
+	config.lang = values.lang;
 	writePref("target", values.mode);
 	writePref("split", values.split);
 	writePref("lines", String(values.lines));
 	writePref("keep", values.keep ? "on" : "off");
+	writePref("lang", values.lang);
 }
 
 /**
@@ -600,6 +604,8 @@ async function openPane(ctx: ExtensionContext, clear: boolean): Promise<"opened"
 			`if exist ${q(sentFile)} goto wait`,
 			"goto quit",
 			":wait",
+			// One line per round would pile up: clear what vim left on screen first.
+			"cls",
 			"title pi pane - waiting for pi",
 			"echo waiting for pi... (this pane stays; close it to hide)",
 			":waitloop",
@@ -918,6 +924,7 @@ export default function piSuperVim(pi: ExtensionAPI) {
 		if (split) config.paneSplit = split;
 		if (prefs.keep === "on") config.paneKeep = true;
 		if (prefs.keep === "off") config.paneKeep = false;
+		if (prefs.lang === "en" || prefs.lang === "zh") config.lang = prefs.lang;
 		const lines = Number.parseInt(prefs.lines ?? "", 10);
 		if (lines > 0) config.paneLines = lines;
 		const cols = Number.parseInt(prefs.cols ?? "", 10);
@@ -982,7 +989,7 @@ export default function piSuperVim(pi: ExtensionAPI) {
 			const value = words[1] ?? "";
 			try {
 				if (action === "pane" || action === "gvim") {
-					applySettings(ctx, { mode: action, split: config.paneSplit, lines: config.paneLines, keep: config.paneKeep });
+					applySettings(ctx, { mode: action, split: config.paneSplit, lines: config.paneLines, keep: config.paneKeep, lang: config.lang });
 					notify(`pivim: target ${action}, remembered for the next pi start`, "info");
 					return;
 				}
@@ -1019,7 +1026,7 @@ export default function piSuperVim(pi: ExtensionAPI) {
 					const { openSettings } = await import("./settings.ts");
 					await openSettings(
 						ctx,
-						{ mode: config.target, split: config.paneSplit, lines: config.paneLines, keep: config.paneKeep },
+						{ mode: config.target, split: config.paneSplit, lines: config.paneLines, keep: config.paneKeep, lang: config.lang },
 						(values) => applySettings(ctx, values),
 					);
 					return;
