@@ -34,6 +34,7 @@ const sid = "imgtest-0123456789";
 
 process.env.PI_SUPER_VIM_DIR = ctrlDir;
 process.env.PI_SUPER_VIM_SERVER = serverName;
+process.env.PI_SUPER_VIM_TARGET = "gvim"; // the default is the WT pane
 process.env.PI_SUPER_VIM_TEST_IMAGE = fixture;
 process.env.PI_SUPER_VIM_CLOSE = "1";
 process.env.PI_SUPER_VIM_DEBUG = "1";

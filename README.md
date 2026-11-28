@@ -1,13 +1,13 @@
 # pi-super-vim
 
 用 vim 来写 pi 的 prompt，**顺手把剪贴板里的截图贴进去**（`:Img`）。pi 还在原来的终端里跑，
-输出也在原来的地方；pi 答完一轮之后，它把「当前 session 的输入处」准备好（常驻 gvim 的一个 tab，
-或者 WT 里 split 一个 pane），你在 vim 里写完 `:Pi`，这段文字（和贴进去的图）就被当成你刚刚在
+输出也在原来的地方；pi 答完一轮之后，它把「当前 session 的输入处」准备好（WT 里 split 一个 pane，
+或者常驻 gvim 的一个 tab），你在 vim 里写完 `:Pi`，这段文字（和贴进去的图）就被当成你刚刚在
 pi 里敲下的输入。
 
-两种形态：gvim 窗口（默认，一个常驻 gvim + 每个 session 一个 tab）和 **WT 分屏**
-（默认一个 pane 留着不关，里面每次回复后换一个一次性 vim；`:q` 才关 pane；
-`/pivim keep off` 恢复成「发完即关、回复后重开」）。
+两种形态：**WT 分屏**（默认，在 pi 所在的 Windows Terminal 里 split 一个 20 行的 pane，留着不关，
+每次回复后在里面换一个一次性 vim；`:q` 才关 pane）和 gvim 窗口（一个常驻 gvim + 每个 session 一个 tab）。
+`/pivim keep off` 恢复成「发完即关、回复后重开」。
 
 ```
  ┌───────────────┐   ① 一轮结束(agent_settled)      ┌──────────────────────────┐
@@ -62,6 +62,7 @@ Esc
 | `.pi/extensions/pi-super-vim.ts` | 让 pi 在本项目里自动加载上面的扩展（转发一行） |
 | `test/harness.mjs` | gvim 模式自测（假的 pi API + 真 gvim 往返） |
 | `test/pane.mjs` | WT 分屏自测（假的 pi API + 真 pane + 真 vim） |
+| `test/settings.mjs` | `/pivim setting` 的数据层自测（tab/行/值/输入校验） |
 | `test/image.mjs` | `:Img` 自测（真 gvim + 假剪贴板 + 假 pi），不碰你真实剪贴板 |
 
 ## 环境要求
@@ -69,8 +70,9 @@ Esc
 * **仅 Windows**。这个扩展是给「Windows 终端里打中文/长 prompt 难受」写的，Linux/macOS 没实测，也不打算支持。
   非 Windows 上请在 gvim 里自己写，别提 issue。
 * **Vim for Windows**：装 `C:\Program Files\Vim\vim92\`（里面同时有 `gvim.exe` 和 `vim.exe`）
-  * gvim 窗口模式：`gvim.exe` 当 server，`vim.exe` 当无窗口的 client（能拿到 `--remote-expr` 的输出和退出码）
-  * WT 分屏模式：只要 console 的 `vim.exe`，另外需要 Windows Terminal 自带的 `wt.exe`（不用额外装）
+  * WT 分屏（**默认**）：只要 console 的 `vim.exe`，另外需要 Windows Terminal 自带的 `wt.exe`
+    （Win11 自带，不用额外装）。没有 WT 就 `/pivim gvim` 或设 `PI_SUPER_VIM_TARGET=gvim`
+  * gvim 窗口：`gvim.exe` 当 server，`vim.exe` 当无窗口的 client（能拿到 `--remote-expr` 的输出和退出码）
 * Vim 8.1 以上（用到 `bufadd()` / `win_findbuf()` / `tabpagebuflist()` / `job_start()`）——9.x 实测没问题
 * pi 1.4+
 * 贴图（`:Img`）额外需要 Windows PowerShell：优先用 `powershell.exe`（系统自带，启动更快），退到 `pwsh`。
@@ -97,7 +99,9 @@ pi install git:github.com/LittleGuo/pi-super-vim@main
 
 本仓库里还有 `.pi/extensions/pi-super-vim.ts`（一行转发），所以在**这个目录**启动 pi 会自动加载
 （项目本地扩展需要信任该项目）。注意：如果你已经全局安装过这个包，在这里启动 pi 会加载到两份，
-扩展自己会去重（第二次加载直接跳过），不会出现两个 gvim。
+扩展自己会去重（第二次加载直接跳过），不会出现两个 gvim —— **但生效的是全局包那份**。
+所以在仓库里改了代码想立刻验证，要么 `pi -ne -e ./pi-super-vim.ts`（只加载这一份），
+要么先 `pi remove git:github.com/LittleGuo/pi-super-vim@main`；正式发布还是推 main 后 `pi update`。
 
 也可以显式加载单个文件：
 
@@ -120,12 +124,12 @@ pi --extension D:\new-start\PI-EXTENSIONS\pi-super-vim\pi-super-vim.ts
 
 ## 使用
 
-两种形态，`/pivim pane` 和 `/pivim gvim` 互切，默认是 gvim 窗口：
+两种形态，`/pivim pane` 和 `/pivim gvim` 互切，默认是 **WT 分屏**（见下面「分屏模式」）：
 
+* **WT 分屏**（默认）：在 pi 所在的 Windows Terminal 里 split 一个 pane（上下，20 行）
 * **gvim 窗口**：一个常驻 gvim，每个 session 一个 tab，一轮结束把 tab 切到前台并清空
-* **WT 分屏**：在 pi 所在的 Windows Terminal 里 split 一个 pane，见下面「分屏模式」
 
-下面以 gvim 窗口为例：
+下面以 gvim 窗口为例（pane 模式的差异见「分屏模式」）：
 
 1. 正常跟 pi 说话。
 2. pi 答完，gvim 自动启动（第一次会慢一点）或切到当前 session 的 tab，标题是 `pi:<session 名称>`
@@ -152,14 +156,40 @@ pi 里的命令：
 
 | 命令 | 作用 |
 | --- | --- |
-| `/pivim` / `/pivim show` | 现在就把 vim tab（或 pane）打开/切过来（不等一轮结束；pane 模式下会把等待中的分屏叫回来） |
+| `/pivim setting` | 打开设置界面（见下面「设置界面」） |
+| `/pivim` / `/pivim show` | 没有 vim 就拉起来（pane 模式：没有 pane 就 split，pane 在等就叫出 vim）；已经开着就什么都不做 |
 | `/pivim pane` / `/pivim gvim` | 切换形态，会被记住 |
-| `/pivim split h` / `split v` | 分屏方向：上下（默认）/ 左右 |
+| `/pivim split up` / `down` / `left` / `right` | vim 在 pi 的哪边（默认 down；`h`/`v` 是旧名字，等同 down/right） |
 | `/pivim keep on` / `keep off` | `:Pi` 发出后 pane 是否留着等 pi（默认 on；off = 发完即关、回复后重开） |
-| `/pivim lines N` / `cols N` | 分屏大小：文字行数（默认 15）/ 文字列数（默认 60） |
+| `/pivim lines N` / `cols N` | 分屏大小：文字行数（默认 20）/ 文字列数（默认 60） |
 | `/pivim status` | 打印 target / 分屏设置 / gvim / client / 插件 / 控制目录 / session，排查用 |
 | `/pivim close` | 关闭当前 session 的 tab（pane 模式发个退出信号：等着的 pane 直接关，正在写的有草稿就等它自己关） |
 | `/pivim install` | 把 vim 插件和贴图脚本复制到 `~/.vim/plugin/` |
+
+`/pivim` 的「什么都不做」是字面意思：pane 里 vim 已经开着、或 gvim 已经有这个 session 的 tab，就不切 tab、不改 buffer（不会把正在写的字清掉）；只有没开时才建。
+
+## 设置界面（`/pivim setting`）
+
+比记命令直观：
+
+```
+Super Vim 设置
+[常规]  pane  gvim
+Tab/Shift+Tab/←/→：切页 · ↑/↓：移动 · Enter/Space：更改 · Esc/q：关闭
+  ──模式──
+→ 模式                                   pane
+```
+
+| tab | 行 | 值 |
+| --- | --- | --- |
+| 常规 | 模式 | `pane` / `gvim` |
+| pane | 分屏 | 上 / 下 / 左 / 右 |
+| pane | 分屏行数 | 数字（Enter 进入输入，输完 Enter 确认、Esc 取消） |
+| pane | 分屏常驻 | 是 / 否（= `keep`） |
+| gvim | — | 暂时没有要配的 |
+
+改动**立即生效**并写进 `prefs`（重启 pi 也记得）；切到 `gvim` 时会把正在等的 pane 收掉。
+`prompt` 模式下没有界面，用 `/pivim ...` 命令代替。
 
 ## 细节
 
@@ -229,20 +259,23 @@ pi 里的命令：
 
 ## 分屏模式（Windows Terminal pane）
 
-除了独立 gvim 窗口，也可以让 vim 直接在 pi 所在的 Windows Terminal 里分屏（默认仍是 gvim 窗口）：
+这是**默认模式**：vim 直接在 pi 所在的 Windows Terminal 里分屏，不再开独立窗口。
+（`/pivim gvim` 换回独立 gvim 窗口，设置会被记住。）
 
 ```
+/pivim setting     # 打开设置界面（推荐）
 /pivim show        # 现在就把 vim 叫出来（gvim 切 tab；pane 模式把正在等的那块叫回来）
-/pivim pane        # 换成 WT 分屏
+/pivim pane        # 换成 WT 分屏（默认）
 /pivim gvim        # 换回独立 gvim 窗口
 /pivim keep on     # 发完 :Pi 后 pane 留着等 pi（默认）
 /pivim keep off    # 发完 :Pi 后 pane 直接关，pi 回复后重新 split
-/pivim split h     # 上下分屏（vim 在下，默认）
-/pivim split v     # 左右分屏（vim 在右）
-/pivim lines 15    # 上下分屏时 vim 占多少文字行
+/pivim split down  # vim 在 pi 下面（默认）；up / left / right 同理
+/pivim lines 20    # 上下分屏时 vim 占多少文字行
 /pivim cols 60     # 左右分屏时 vim 占多少文字列
 /pivim status       # 看当前 target / 方向 / 大小
 ```
+
+`上` / `左` 是先按 `-H`/`-V` 分屏、再用 `wt swap-pane up|left` 把两块对调，视觉上是 vim 在上面/左边。
 
 这些设置写在 `<控制目录>/prefs` 里，重启 pi 也记得。
 
@@ -282,9 +315,9 @@ pi 里的命令：
 | `PI_SUPER_VIM_AUTO` | `1` | `0` = 一轮结束后不自动弹 vim，只用 `/pivim` |
 | `PI_SUPER_VIM_STARTINSERT` | `1` | 打开 tab 时是否直接进插入模式 |
 | `PI_SUPER_VIM_CLOSE` | `1` | pi 退出时是否关闭 tab |
-| `PI_SUPER_VIM_TARGET` | `gvim` | `pane` = 用 WT 分屏而不是 gvim 窗口（也可用 `/pivim pane`） |
+| `PI_SUPER_VIM_TARGET` | `pane` | `gvim` = 用独立 gvim 窗口（也可用 `/pivim gvim`） |
 | `PI_SUPER_VIM_PANE_SPLIT` | `h` | 分屏方向：`h` 上下，`v` 左右 |
-| `PI_SUPER_VIM_PANE_LINES` | `15` | 上下分屏时的高度（文字行数） |
+| `PI_SUPER_VIM_PANE_LINES` | `20` | 上下分屏时的高度（文字行数） |
 | `PI_SUPER_VIM_PANE_COLS` | `60` | 左右分屏时的宽度（文字列数） |
 | `PI_SUPER_VIM_PANE_KEEP` | `1` | `0` = `:Pi` 发完就关 pane（回复后重新 split），不留着等 |
 | `PI_SUPER_VIM_PANE_WINDOW` | `0` | `wt -w` 的目标：`0` = 最近使用的 WT 窗口；给个名字（如 `pivim`）= 固定用那个窗口，没有就新建 |
@@ -342,6 +375,12 @@ node test/pane.mjs
 它会检查：pane 真的 split 出来了、`:Pi` 之后 pane 留着在等（launcher 循环）、`/pivim show`
 和下一轮结算都把新 vim 放回**同一个** pane（不重新 split）、`:q` 之后 pane 关掉、再下一轮重新 split；
 顺带跑一个真 vim 验证 `:Pi` 写出的 `.pane.sent` 信号。
+
+设置界面的自测（只测数据层：tab/行/值/输入校验，不用终端）：
+
+```powershell
+node test/settings.mjs
+```
 
 贴图的自测（真 gvim、真映射、真往返，但剪贴板用 `test/fake-clip.ps1` 顶替，不碰你的剪贴板）：
 

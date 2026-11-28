@@ -9,7 +9,7 @@
   "homepage": "https://github.com/LittleGuo/pi-super-vim#readme",
   "bugs": "https://github.com/LittleGuo/pi-super-vim/issues",
   "type": "module",
-  "files": ["pi-super-vim.ts", "vim/"],
+  "files": ["pi-super-vim.ts", "settings.ts", "vim/"],
   "pi": {
     "extensions": ["./pi-super-vim.ts"]
   },

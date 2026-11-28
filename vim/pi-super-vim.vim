@@ -464,6 +464,20 @@ function! PiSuperVimOpen(file, sid, ...) abort
   return tabpagenr()
 endfunction
 
+" Tab number of one session's prompt tab, 0 when it has none.  Used by pi's
+" /pivim to leave an already open tab alone.
+function! PiSuperVimTab(sid) abort
+  let l:buf = s:FindBufBySession(a:sid)
+  if l:buf == -1
+    return 0
+  endif
+  let l:wins = win_findbuf(l:buf)
+  if empty(l:wins)
+    return 0
+  endif
+  return win_id2tabwin(l:wins[0])[0]
+endfunction
+
 " Relabel the tab of one session without touching focus or buffer contents.
 function! PiSuperVimRelabel(sid, name) abort
   let l:buf = s:FindBufBySession(a:sid)

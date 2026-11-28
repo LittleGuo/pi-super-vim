@@ -23,6 +23,7 @@ const serverName = "PI_SUPER_VIM_TEST";
 const sid = "test-0123456789abcdef";
 
 process.env.PI_SUPER_VIM_SERVER = serverName;
+process.env.PI_SUPER_VIM_TARGET = "gvim"; // the default is the WT pane
 process.env.PI_SUPER_VIM_DIR = ctrlDir;
 process.env.PI_SUPER_VIM_CLOSE = "1";
 process.env.PI_SUPER_VIM_DEBUG = "1";
@@ -216,6 +217,18 @@ check(
 	vimExpr("&titlestring").includes("pi_label") && !vimExpr("&titlestring").includes("pi_session"),
 	vimExpr("&titlestring"),
 );
+
+// --- /pivim leaves an existing gvim tab alone ------------------------------
+// Text that is being typed must survive, and the tab must not be switched.
+vimScript(["tabnext 1", `call setline(1, ['half typed on purpose'])`, "tabnext 2"]);
+await commands.get("pivim").handler("", ctx);
+check(
+	"pivim does not touch an open gvim tab",
+	vimExpr("string(getbufline(tabpagebuflist(1)[0], 1))") === "['half typed on purpose']" && vimExpr("tabpagenr()") === "2",
+	vimExpr("string([getbufline(tabpagebuflist(1)[0], 1), tabpagenr()])"),
+);
+check("pivim says the tab is already open", /already open as a tab/.test(logs.at(-1) ?? ""), logs.at(-1) ?? "");
+vimScript(["tabnext 1", "PiClear", "tabnext 2"]);
 
 // --- busy pi queues the prompt --------------------------------------------
 idle = false;
