@@ -553,9 +553,11 @@ function! s:Submit(mode) abort
   silent! setlocal nomodified
   call delete(s:CtrlPath('draft'))
   echomsg 'pi: sent ' . len(split(l:text, "\n", 1)) . ' line(s), waiting for pi'
-  " Pane mode: a dedicated vim per prompt, so it quits and the pane goes away
-  " with it.  pi opens a fresh pane when the run has settled.
+  " Pane mode: the launcher loop reads pane.sent (= the text went to pi) and
+  " keeps the pane waiting for the next run; without it vim was closed by :q and
+  " the pane goes away with it.
   if get(g:, 'pi_super_vim_quit_after_send', 0)
+    call writefile([string(localtime())], s:CtrlPath('pane.sent'))
     qall!
   endif
 endfunction

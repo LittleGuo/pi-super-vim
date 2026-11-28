@@ -47,6 +47,12 @@ const config = {
 	paneSize: process.env.PI_SUPER_VIM_PANE_SIZE?.trim() || "",
 	/** "h" stacks vim under pi, "v" puts it beside pi. */
 	paneSplit: process.env.PI_SUPER_VIM_PANE_SPLIT?.trim().toLowerCase() === "v" ? "-V" : "-H",
+	/** Pull focus into the pane when vim comes back. PI_SUPER_VIM_PANE_FOCUS=0 disables it. */
+	paneFocus: process.env.PI_SUPER_VIM_PANE_FOCUS !== "0",
+	/** Keep the pane after a send and start vim in it again. 0 = one pane per prompt. */
+	paneKeep: process.env.PI_SUPER_VIM_PANE_KEEP !== "0",
+	/** wt -w: "0" = most recently used window, a name keeps the pane in its own window. */
+	paneWindow: process.env.PI_SUPER_VIM_PANE_WINDOW?.trim() || "0",
 	/** Pane height in text lines when split is "h". */
 	paneLines: Number.parseInt(process.env.PI_SUPER_VIM_PANE_LINES ?? "", 10) || 15,
 	/** Pane width in text columns when split is "v". */
@@ -415,17 +421,62 @@ async function runVimScript(sid: string, lines: string[]): Promise<void> {
 // pane mode: vim in a Windows Terminal split pane
 // ---------------------------------------------------------------------------
 
-/** Pid the vim half wrote into <sid>.pane; it removes the file on exit. */
-function paneAlive(pidFile: string): boolean {
+/** Pid the vim half wrote into <sid>.pane; 0 when there is none. */
+function panePid(pidFile: string): number {
 	try {
 		const pid = Number.parseInt(fs.readFileSync(pidFile, "utf8").trim(), 10);
-		if (!Number.isFinite(pid) || pid <= 0) return false;
+		return Number.isFinite(pid) && pid > 0 ? pid : 0;
+	} catch {
+		return 0;
+	}
+}
+
+/** True while that vim is still running; it removes the file on exit. */
+function paneAlive(pidFile: string): boolean {
+	const pid = panePid(pidFile);
+	if (!pid) return false;
+	try {
 		process.kill(pid, 0);
 		return true;
 	} catch {
 		return false;
 	}
 }
+
+/**
+ * The pane's launcher loop rewrites <sid>.pane.loop every second while it waits
+ * for pi.  A missing or stale file means the pane is gone (closed, or `:q`).
+ */
+function paneWaiting(loopFile: string): boolean {
+	try {
+		return Date.now() - fs.statSync(loopFile).mtimeMs < 3_000;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * A pane that comes back does not take the focus: the new pane of a split does,
+ * but an existing one needs wt's move-focus, which only works on the active
+ * tab/window and gives up quietly otherwise.
+ */
+function focusPane(sid: string): void {
+	if (!config.paneFocus) return;
+	const wt = wtPath();
+	if (!wt) return;
+	const dir = paneDirs.get(sid) ?? config.paneSplit;
+	log(`pane: move-focus ${dir === "-V" ? "right" : "down"}`);
+	const child = spawn(wt, ["-w", config.paneWindow, "move-focus", dir === "-V" ? "right" : "down"], {
+		detached: true,
+		stdio: "ignore",
+		windowsHide: true,
+	});
+	child.on("error", (error) => log(`move-focus failed: ${String(error)}`));
+	child.unref();
+}
+
+/** Split direction each session's pane was created with (/pivim split may change). */
+const paneDirs = new Map<string, string>();
 
 /** wt.exe: App Execution Aliases cannot be stat()ed, so probe with access(). */
 function wtPath(): string | undefined {
@@ -443,7 +494,7 @@ function wtPath(): string | undefined {
 	return findOnPath(["wt", "wt.exe"]);
 }
 
-async function openPane(ctx: ExtensionContext, clear: boolean): Promise<void> {
+async function openPane(ctx: ExtensionContext, clear: boolean): Promise<"opened" | "already"> {
 	const sid = ctx.sessionManager.getSessionId();
 	if (!sid) throw new Error("pi session is not ready yet");
 	const plugin = resolvePluginPath(ctx.cwd);
@@ -454,11 +505,26 @@ async function openPane(ctx: ExtensionContext, clear: boolean): Promise<void> {
 	if (!wt) throw new Error("wt.exe not found: pane mode needs Windows Terminal (set PI_SUPER_VIM_WT)");
 	fs.mkdirSync(config.ctrlDir, { recursive: true });
 
-	if (paneAlive(path.join(config.ctrlDir, `${sid}.pane`))) {
-		// A pane closes itself when you send (`:Pi`), so a live one means you are
-		// already writing: leave it alone.  wt has no stable pane id to focus.
-		return;
+	// The launcher loop keeps the pane alive after a send and starts a fresh vim
+	// on demand, so there are three states: vim up (you are writing), loop waiting
+	// for pi, or no pane at all.
+	const pidFile = path.join(config.ctrlDir, `${sid}.pane`);
+	const loopFile = path.join(config.ctrlDir, `${sid}.pane.loop`);
+	const openFile = path.join(config.ctrlDir, `${sid}.pane.open`);
+	const sentFile = path.join(config.ctrlDir, `${sid}.pane.sent`);
+	const quitFile = path.join(config.ctrlDir, `${sid}.pane.quit`);
+
+	if (paneAlive(pidFile)) {
+		log("pane: vim is up, leaving it alone");
+		return "already";
 	}
+	if (config.paneKeep && paneWaiting(loopFile)) {
+		log("pane: waiting, asked the loop for vim");
+		fs.writeFileSync(openFile, String(Date.now()), "utf8");
+		focusPane(sid);
+		return "opened";
+	}
+	log("pane: no pane, splitting one");
 
 	const file = sessionFilePath(sid);
 	const scriptFile = path.join(config.ctrlDir, `${sid}.pane.vim`);
@@ -474,16 +540,54 @@ async function openPane(ctx: ExtensionContext, clear: boolean): Promise<void> {
 		].join("\n") + "\n",
 		"utf8",
 	);
-	// A .cmd launcher, because wt's own parser eats arguments that start with "-".
-	// Exit 0 matters: with a non-zero code WT keeps the dead pane open and asks
-	// for Enter or Ctrl+D.
-	fs.writeFileSync(launcher, `@echo off\r\n"${vim}" -S "${scriptFile}" "${file}"\r\nexit /b 0\r\n`, "utf8");
+	// The launcher is a loop so the pane outlives one vim: after `:Pi` it waits
+	// for <sid>.pane.open, after `:q` it exits and WT closes the pane.  With
+	// /pivim keep off it is the old one-shot line instead.  A .cmd file, because
+	// wt's own parser eats arguments that start with "-".  Exit 0 matters: with
+	// a non-zero code WT keeps the dead pane and asks for Enter.
+	const q = (value: string) => `"${value}"`;
+	const lines = config.paneKeep
+		? [
+			"@echo off",
+			":loop",
+			`if exist ${q(quitFile)} goto quit`,
+			`del ${q(openFile)} >nul 2>&1`,
+			`del ${q(sentFile)} >nul 2>&1`,
+			`${q(vim)} -S ${q(scriptFile)} ${q(file)}`,
+			`if exist ${q(sentFile)} goto wait`,
+			"goto quit",
+			":wait",
+			"title pi pane - waiting for pi",
+			"echo waiting for pi... (this pane stays; close it to hide)",
+			":waitloop",
+			`if exist ${q(quitFile)} goto quit`,
+			`if exist ${q(openFile)} goto loop`,
+			// The heartbeat is written only while waiting, so a fresh file means
+			// "waiting for pi", not "vim is starting up".
+			`echo waiting>${q(loopFile)}`,
+			"ping -n 2 127.0.0.1 >nul",
+			"goto waitloop",
+			":quit",
+			`del ${q(loopFile)} >nul 2>&1`,
+			`del ${q(openFile)} >nul 2>&1`,
+			`del ${q(sentFile)} >nul 2>&1`,
+			"exit /b 0",
+		]
+		: ["@echo off", `${q(vim)} -S ${q(scriptFile)} ${q(file)}`, "exit /b 0"];
+	fs.writeFileSync(launcher, lines.join("\r\n") + "\r\n", "utf8");
+
+	// Clean leftovers so a fresh pane does not quit or open vim right away, and
+	// seed the heartbeat so a second settle does not split another pane.
+	for (const marker of [quitFile, openFile, sentFile, loopFile]) fs.rmSync(marker, { force: true });
+	if (config.paneKeep) fs.writeFileSync(loopFile, "spawn", "utf8");
+	paneDirs.set(sid, config.paneSplit);
 
 	log(`wt split-pane ${launcher}`);
+	const before = panePid(pidFile);
 	const child = spawn(
 		wt,
 		[
-			"-w", "0", "split-pane", config.paneSplit,
+			"-w", config.paneWindow, "split-pane", config.paneSplit,
 			"--size", paneSizeFraction(),
 			"-d", ctx.cwd,
 			"--title", `pi:${label || sid.slice(0, 8)}`,
@@ -493,16 +597,25 @@ async function openPane(ctx: ExtensionContext, clear: boolean): Promise<void> {
 	);
 	child.on("error", (error) => log(`wt spawn error: ${String(error)}`));
 	child.unref();
+
+	// wt exits 0 even when a wedged Windows Terminal ignores the command, so wait
+	// for the vim half instead of reporting success blindly.
+	for (let i = 0; i < 50; i++) {
+		await sleep(100);
+		if (panePid(pidFile) !== before && paneAlive(pidFile)) return "opened";
+	}
+	// Drop the seeded heartbeat, or the next attempt believes a pane is waiting.
+	fs.rmSync(loopFile, { force: true });
+	throw new Error("Windows Terminal did not open a pane (it ignored the wt command) - restart Windows Terminal");
 }
 
 // ---------------------------------------------------------------------------
 // opening and closing the tab
 // ---------------------------------------------------------------------------
 
-async function openTab(ctx: ExtensionContext, clear: boolean): Promise<void> {
+async function openTab(ctx: ExtensionContext, clear: boolean): Promise<"opened" | "already"> {
 	if (config.target === "pane") {
-		await openPane(ctx, clear);
-		return;
+		return openPane(ctx, clear);
 	}
 	const sid = ctx.sessionManager.getSessionId();
 	if (!sid) throw new Error("pi session is not ready yet");
@@ -517,12 +630,17 @@ async function openTab(ctx: ExtensionContext, clear: boolean): Promise<void> {
 			`call PiSuperVimOpen(${vimStr(sessionFilePath(sid))}, ${vimStr(sid)}, ${clear ? 1 : 0}, ${vimStr(sessionLabel(ctx))})`,
 		]);
 	});
+	return "opened";
 }
 
 async function closeTab(ctx: ExtensionContext): Promise<void> {
-	// A pane is closed by the user (:q); wt exposes no close-pane command.
-	if (config.target === "pane") return;
 	const sid = ctx.sessionManager.getSessionId();
+	if (config.target === "pane") {
+		// The launcher loop exits on this; a vim still open keeps the pane until
+		// it is closed (its unsent text must survive, so no kill).
+		if (sid) fs.writeFileSync(path.join(config.ctrlDir, `${sid}.pane.quit`), "", "utf8");
+		return;
+	}
 	const plugin = resolvePluginPath(ctx.cwd);
 	if (!sid || !plugin) return;
 	if (!(await serverAlive())) return;
@@ -735,6 +853,8 @@ export default function piSuperVim(pi: ExtensionAPI) {
 		if (prefs.target === "pane" || prefs.target === "gvim") config.target = prefs.target;
 		if (prefs.split === "h") config.paneSplit = "-H";
 		if (prefs.split === "v") config.paneSplit = "-V";
+		if (prefs.keep === "on") config.paneKeep = true;
+		if (prefs.keep === "off") config.paneKeep = false;
 		const lines = Number.parseInt(prefs.lines ?? "", 10);
 		if (lines > 0) config.paneLines = lines;
 		const cols = Number.parseInt(prefs.cols ?? "", 10);
@@ -791,7 +911,7 @@ export default function piSuperVim(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("pivim", {
-		description: "Open the vim prompt tab (pivim pane | gvim | split h|v | lines N | cols N | install | close | status)",
+		description: "Open the vim prompt now (pivim [show|open] | pane | gvim | split h|v | lines N | cols N | keep on|off | install | close | status)",
 		handler: async (args, ctx) => {
 			latestCtx = ctx;
 			const words = (args ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -799,6 +919,11 @@ export default function piSuperVim(pi: ExtensionAPI) {
 			const value = words[1] ?? "";
 			try {
 				if (action === "pane" || action === "gvim") {
+					// Leaving pane mode would leave a waiting pane behind: tell it to go.
+					if (action === "gvim" && config.target === "pane") {
+						const sid = ctx.sessionManager.getSessionId();
+						if (sid) fs.writeFileSync(path.join(config.ctrlDir, `${sid}.pane.quit`), "", "utf8");
+					}
 					config.target = action;
 					writePref("target", action);
 					notify(`pivim: target ${action}, remembered for the next pi start`, "info");
@@ -808,6 +933,18 @@ export default function piSuperVim(pi: ExtensionAPI) {
 					config.paneSplit = value === "v" ? "-V" : "-H";
 					writePref("split", value);
 					notify(`pivim: split ${value === "v" ? "left/right" : "top/bottom"} (next pane)`, "info");
+					return;
+				}
+				if (action === "keep") {
+					const on = value !== "off" && value !== "0";
+					config.paneKeep = on;
+					writePref("keep", on ? "on" : "off");
+					// The running launcher keeps its mode; a waiting pane can be let go now.
+					if (!on) {
+						const sid = ctx.sessionManager.getSessionId();
+						if (sid) fs.writeFileSync(path.join(config.ctrlDir, `${sid}.pane.quit`), "", "utf8");
+					}
+					notify(`pivim: keep ${on ? "on (pane stays after :Pi)" : "off (pane closes after :Pi)"}`, "info");
 					return;
 				}
 				if (action === "lines" || action === "cols") {
@@ -833,7 +970,7 @@ export default function piSuperVim(pi: ExtensionAPI) {
 				}
 				if (action === "close") {
 					await closeTab(ctx);
-					notify("pivim: tab closed", "info");
+					notify("pivim: closed", "info");
 					return;
 				}
 				if (action === "status") {
@@ -842,7 +979,7 @@ export default function piSuperVim(pi: ExtensionAPI) {
 					notify(
 						[
 							`target: ${config.target}`,
-							`pane: split ${config.paneSplit === "-V" ? "left/right" : "top/bottom"}, ${config.paneSplit === "-V" ? `${config.paneCols} cols` : `${config.paneLines} lines`} (size ${paneSizeFraction()})`,
+							`pane: split ${config.paneSplit === "-V" ? "left/right" : "top/bottom"}, ${config.paneSplit === "-V" ? `${config.paneCols} cols` : `${config.paneLines} lines`} (size ${paneSizeFraction()}), keep ${config.paneKeep ? "on" : "off"}, focus ${config.paneFocus ? "on" : "off"}, window ${config.paneWindow}`,
 							`vim server: ${config.serverName} (${alive ? "running" : "not running"})`,
 							`gvim: ${gvimPath() ?? "not found"}`,
 							`client: ${clientPath() ?? "not found"}`,
@@ -854,8 +991,11 @@ export default function piSuperVim(pi: ExtensionAPI) {
 					);
 					return;
 				}
-				await openTab(ctx, true);
-				notify("pivim: vim tab is ready", "info");
+				// Bare /pivim, /pivim show and /pivim open: pi runs extension commands
+				// even while a run is streaming, and in pane mode this also brings vim
+				// back into a pane that is already waiting.
+				const opened = await openTab(ctx, true);
+				notify(opened === "already" ? "pivim: vim is already open in the pane" : "pivim: vim is ready", "info");
 			} catch (error) {
 				notify(`pivim: ${String(error instanceof Error ? error.message : error)}`, "error");
 			}

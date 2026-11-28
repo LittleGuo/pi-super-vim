@@ -6,7 +6,8 @@
 pi 里敲下的输入。
 
 两种形态：gvim 窗口（默认，一个常驻 gvim + 每个 session 一个 tab）和 **WT 分屏**
-（每个 prompt 一个一次性 pane，发完即关，回复后再开新的）。
+（默认一个 pane 留着不关，里面每次回复后换一个一次性 vim；`:q` 才关 pane；
+`/pivim keep off` 恢复成「发完即关、回复后重开」）。
 
 ```
  ┌───────────────┐   ① 一轮结束(agent_settled)      ┌──────────────────────────┐
@@ -151,12 +152,13 @@ pi 里的命令：
 
 | 命令 | 作用 |
 | --- | --- |
-| `/pivim` | 现在就把 vim tab（或 pane）打开/切过来（不等一轮结束） |
+| `/pivim` / `/pivim show` | 现在就把 vim tab（或 pane）打开/切过来（不等一轮结束；pane 模式下会把等待中的分屏叫回来） |
 | `/pivim pane` / `/pivim gvim` | 切换形态，会被记住 |
 | `/pivim split h` / `split v` | 分屏方向：上下（默认）/ 左右 |
+| `/pivim keep on` / `keep off` | `:Pi` 发出后 pane 是否留着等 pi（默认 on；off = 发完即关、回复后重开） |
 | `/pivim lines N` / `cols N` | 分屏大小：文字行数（默认 15）/ 文字列数（默认 60） |
 | `/pivim status` | 打印 target / 分屏设置 / gvim / client / 插件 / 控制目录 / session，排查用 |
-| `/pivim close` | 关闭当前 session 的 tab（pane 模式自己 `:q` 或发完就关） |
+| `/pivim close` | 关闭当前 session 的 tab（pane 模式发个退出信号：等着的 pane 直接关，正在写的有草稿就等它自己关） |
 | `/pivim install` | 把 vim 插件和贴图脚本复制到 `~/.vim/plugin/` |
 
 ## 细节
@@ -171,6 +173,9 @@ pi 里的命令：
     谁先看到谁处理，文件先删再投递，避免重复发送；
   * `<sid>.cmd.vim`：扩展写给 vim 执行的小脚本；
   * `<sid>.draft`：你还没发出去、又关掉 vim 的草稿，下次打开自动恢复；
+  * `<sid>.pane.*`（pane 模式）：`.pane` 是这个 vim 的 pid，`.pane.vim` / `.pane.cmd` 是脚本和循环
+    launcher，`.pane.loop` 是等待心跳（每秒重写），`.pane.open` / `.pane.sent` / `.pane.quit`
+    是“叫 vim 回来 / 已经发出去 / 可以走了”三个信号，谁用谁删；
   * `<sid>.imgN.<ext>` / `<sid>.imgN.res`：`:Img` 抓到的图片和它的结果行（`.res` 读完就删），
     发送成功后图片文件也删；
   * `debug.log`：只有 `PI_SUPER_VIM_DEBUG=1` 时才写。
@@ -178,6 +183,7 @@ pi 里的命令：
   但仅在你的 `tabline` 本来就是空的时才接管，不会覆盖你已有的配置；想彻底关掉设
   `let g:pi_super_vim_tabline = 0`。
 * **退出**：pi 退出（或 `/new`、`/resume` 换 session）时会关掉对应 tab；最后一个 tab 关掉时 gvim 顺势退出。
+  pane 模式会写 `<sid>.pane.quit`：屏幕在等 pi 的 pane 立刻关；正在写 vim 的则等你关掉 vim。
   只在**确实有没发出去的文字**时才拦你：把内容删干净之后 `:q` / `:PiClose` 直接关，
   不会再要你敲 `:q!`；有文字时保留 tab 并写草稿。`/pivim close` 同理。
 
@@ -226,8 +232,11 @@ pi 里的命令：
 除了独立 gvim 窗口，也可以让 vim 直接在 pi 所在的 Windows Terminal 里分屏（默认仍是 gvim 窗口）：
 
 ```
+/pivim show        # 现在就把 vim 叫出来（gvim 切 tab；pane 模式把正在等的那块叫回来）
 /pivim pane        # 换成 WT 分屏
 /pivim gvim        # 换回独立 gvim 窗口
+/pivim keep on     # 发完 :Pi 后 pane 留着等 pi（默认）
+/pivim keep off    # 发完 :Pi 后 pane 直接关，pi 回复后重新 split
 /pivim split h     # 上下分屏（vim 在下，默认）
 /pivim split v     # 左右分屏（vim 在右）
 /pivim lines 15    # 上下分屏时 vim 占多少文字行
@@ -240,13 +249,22 @@ pi 里的命令：
 **工作方式**（和 gvim 模式的一个关键区别）：
 
 * 一轮结束后开一个 pane，里面是**一次性的 vim**（不是 server，没法远程调用它）；
-* 你写完 `:Pi` / `:w`，那个 vim 直接 `qall!` 退出，pane 跟着消失（launcher 结尾 `exit /b 0`，
-  WT 看到退出码 0 就直接关 pane，不会停在“按回车关闭”）；
-* pi 回答完再开一个新的空 pane —— 所以不需要“清空缓冲区”的逻辑；
-* 没发就 `:q` 的话，`VimLeavePre` 照旧把草稿写进 `<sid>.draft`，下一个 pane 自动恢复。
+* 你 `:Pi` / `:w` 发出去，vim 照旧 `qall!` 退出；pane 默认**留着**（launcher 是个循环，
+  这时候显示一行 `waiting for pi...`）。`/pivim keep off` 就恢复成以前那样：pane 跟着关，
+  下一轮再 split 一个新的；
+* pi 回答完，扩展写 `<sid>.pane.open`，launcher 看到就在**同一个 pane** 里起一个新的 vim ——
+  buffer 在内存里，旧 vim 一退就没了，所以**不需要清屏**，新 vim 天生是空的；
+  期间你打的草稿照旧从 `<sid>.draft` 恢复，不会被吃掉；
+* 没发就 `:q`：launcher 退出，pane 跟着关（keep on 时只有发出去才留着等）；
+* 判断“pane 还在不在”用的是心跳：launcher 每秒重写一次 `<sid>.pane.loop`，
+  文件没了或超过 3 秒没更新（pane 被点 X）就当作不在，重新 split；
+* 焦点：新 split 的 pane 由 WT 自动给焦点；**已经存在的 pane** 用
+  `wt -w 0 move-focus down|right` 把焦点从 pi 那半边拽过来，`PI_SUPER_VIM_PANE_FOCUS=0` 关掉。
 
-**已知限制**：WT 的 CLI 只有按序号的 `focus-pane`、没有稳定 pane id，也没有 `close-pane`，
-所以扩展不会（也无法）把焦点切到 pane；用 WT 自己的快捷键在 pane 之间跳。
+**已知限制**：`move-focus` 只作用于“当前 tab / 最近使用的 WT 窗口”，所以
+（a）你切到别的 tab 时它会在那个 tab 里挪一下焦点（单 pane 的 tab 是空操作）；
+（b）多 pane 布局 + 焦点不在 pi 那半边时可能挪错地方；（c）pi 被强杀时 launcher
+不会收到 `.pane.quit`，pane 会停在 waiting，点 X 关掉即可。
 
 行数/列数的换算是 `行数 / pi 终端行数` 得出 `wt --size` 的比例，WT 会按像素取整，所以实际可能差 1~2 行。
 也可以用环境变量 `PI_SUPER_VIM_PANE_SPLIT=h|v`、`PI_SUPER_VIM_PANE_LINES`、`PI_SUPER_VIM_PANE_COLS`
@@ -268,6 +286,9 @@ pi 里的命令：
 | `PI_SUPER_VIM_PANE_SPLIT` | `h` | 分屏方向：`h` 上下，`v` 左右 |
 | `PI_SUPER_VIM_PANE_LINES` | `15` | 上下分屏时的高度（文字行数） |
 | `PI_SUPER_VIM_PANE_COLS` | `60` | 左右分屏时的宽度（文字列数） |
+| `PI_SUPER_VIM_PANE_KEEP` | `1` | `0` = `:Pi` 发完就关 pane（回复后重新 split），不留着等 |
+| `PI_SUPER_VIM_PANE_WINDOW` | `0` | `wt -w` 的目标：`0` = 最近使用的 WT 窗口；给个名字（如 `pivim`）= 固定用那个窗口，没有就新建 |
+| `PI_SUPER_VIM_PANE_FOCUS` | `1` | `0` = pane 里的 vim 回来时不抢焦点（不动 `move-focus`） |
 | `PI_SUPER_VIM_WT` | 自动查找 | `wt.exe` 路径 |
 | `PI_SUPER_VIM_DEBUG` | `0` | `1` = 往 `<控制目录>/debug.log` 写日志 |
 
@@ -285,6 +306,11 @@ vim 侧变量（可放 vimrc，或者等 pi 打开 tab 后 `:let`，只影响这
 
 ## 排查
 
+* `/pivim` 报 `Windows Terminal did not open a pane`：WT 的单实例命令通道坏了——`wt.exe` 退出码还是 0，
+  但窗口不理它（手动 `wt -w 0 split-pane` 也一样）。这是 WT 自己的状态，重启 Windows Terminal 就好；
+  不想重启就先用 `/pivim gvim`。
+* `/pivim` 说 `vim is already open in the pane`：那块 pane 还在（可能在别的 tab 或被挤成一条），
+  不是新 split；关掉那个 pane（`Ctrl+Shift+W`）或按它的提示回车，再 `/pivim`。
 * `/pivim status`：先看 gvim / client / 插件路径是否都找到了。
 * `PI_SUPER_VIM_DEBUG=1` 后看 `%TEMP%\pi-super-vim\debug.log`：每次 `--serverlist`、
   `--remote-expr` 的内容和结果都在里面。
@@ -307,11 +333,15 @@ node test/harness.mjs
 检查 pi 收到的文本、清空规则、草稿保护、第二个 session 的 tab、忙时排队、退出时关 tab。
 跑完自己 `qa!` 关掉测试用的 gvim。
 
-分屏模式的自测（会真的在你当前 WT 窗口里开一个 pane，跑完自己关掉）：
+分屏模式的自测（会在**自己的**那个名为 `pi-super-vim-test` 的 WT 窗口里跑，不碰你 pi 所在的窗口，跑完自己关掉）：
 
 ```powershell
 node test/pane.mjs
 ```
+
+它会检查：pane 真的 split 出来了、`:Pi` 之后 pane 留着在等（launcher 循环）、`/pivim show`
+和下一轮结算都把新 vim 放回**同一个** pane（不重新 split）、`:q` 之后 pane 关掉、再下一轮重新 split；
+顺带跑一个真 vim 验证 `:Pi` 写出的 `.pane.sent` 信号。
 
 贴图的自测（真 gvim、真映射、真往返，但剪贴板用 `test/fake-clip.ps1` 顶替，不碰你的剪贴板）：
 
